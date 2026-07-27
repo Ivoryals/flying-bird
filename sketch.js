@@ -34,7 +34,9 @@ const PAGMAR_DISPLAY_FONT_FAMILY = "AlfaBravo-medium";
   document.head.appendChild(style);
 })();
 
-let screenMode = "intro";
+// The English intro screen has been removed: the piece now opens
+// directly on the letter field.
+let screenMode = "game";
 let transition = 0;
 let transitionStarted = false;
 
@@ -472,6 +474,8 @@ function setup() {
   }
 
   introStartTime = millis();
+  transition = 1;
+  transitionStarted = true;
 
   redColor = color(255, 0, 0);
   blueColor = color(0, 231, 255);
@@ -481,8 +485,6 @@ function setup() {
 
   loadMemoryCurtainHolderSvg();
 
-  setupIntroLayout();
-
   randomSeed(gridSeed);
   generateRightToLeftGrid();
 
@@ -491,6 +493,9 @@ function setup() {
   // get laid out no matter what happens with those below.
   calculateLayout();
   setupIpadTouchSupport();
+
+  // The grid fades in on its own now that nothing precedes it.
+  beginGridReveal();
 
   setupHomeScreenDom();
   setupBorderScreenDom();
