@@ -21,7 +21,7 @@ const PAGMAR_DISPLAY_FONT_FAMILY = "AlfaBravo-Medium";
 
     @font-face {
       font-family: "AlfaBravo-Medium";
-      src: url("AlfaBravo-medium.otf") format("opentype");
+      src: url("AlfaBravo-Medium.otf") format("opentype");
       font-style: normal;
       font-weight: 500;
       font-display: swap;
