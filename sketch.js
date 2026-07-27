@@ -3,8 +3,8 @@ const PAGMAR_MONO_FONT_FILE = "SimplerPro_HLAR_Mono-Regular 2.otf";
 const PAGMAR_MONO_FONT_FAMILY = "SimplerPro_HLAR_Mono";
 
 // Used only by the navigation bars and the bilingual project title.
-const PAGMAR_DISPLAY_FONT_FILE = "AlfaBravo-medium.otf";
-const PAGMAR_DISPLAY_FONT_FAMILY = "AlfaBravo-medium";
+const PAGMAR_DISPLAY_FONT_FILE = "AlfaBravo-Medium.otf";
+const PAGMAR_DISPLAY_FONT_FAMILY = "AlfaBravo-Medium";
 
 (function installPagmarMonoFontFace() {
   if (typeof document === "undefined") return;
@@ -20,7 +20,7 @@ const PAGMAR_DISPLAY_FONT_FAMILY = "AlfaBravo-medium";
     }
 
     @font-face {
-      font-family: "AlfaBravo-medium";
+      font-family: "AlfaBravo-Medium";
       src: url("AlfaBravo-medium.otf") format("opentype");
       font-style: normal;
       font-weight: 500;
@@ -470,7 +470,7 @@ function setup() {
 
   // Preload the display face used only in the navigation bars and project title.
   if (typeof document !== "undefined" && document.fonts && typeof document.fonts.load === "function") {
-    document.fonts.load('500 32px "AlfaBravo-medium"').catch(function() {});
+    document.fonts.load('500 32px "AlfaBravo-Medium"').catch(function() {});
   }
 
   introStartTime = millis();
@@ -3017,7 +3017,7 @@ function getSimplerCanvasFont(sizeVal) {
 
 function getAlfaBravoCanvasFont(sizeVal, useMediumWeight) {
   const weight = useMediumWeight === false ? "400" : "500";
-  return weight + " " + sizeVal + "px 'AlfaBravo-medium', 'SimplerPro_HLAR_Mono', monospace";
+  return weight + " " + sizeVal + "px 'AlfaBravo-Medium', 'SimplerPro_HLAR_Mono', monospace";
 }
 
 function forceRTL(txt) {
