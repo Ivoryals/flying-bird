@@ -3166,7 +3166,7 @@ function drawTopBar(alphaVal) {
     width - rightPad,
     h / 2,
     "ציפור מעופפת",
-    "عصفور طاير",
+    "عصفور طيار",
     titleSize,
     alphaVal,
     "right",
