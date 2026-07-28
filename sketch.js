@@ -433,8 +433,13 @@ const MEMORY_HEBREW_COLOR = "#2ef5ff";
 const MEMORY_ARABIC_COLOR = "#ff3535";
 const MEMORY_ARABIC_FONT_SCALE = 0.82;
 
-// ---- Belonging "Temporary Rooms" doors state ----
+// ---- Belonging screen state ----
 let belongingPopupOpen = false;
+let belongingCyanImg = null;
+let belongingRedImg = null;
+let belongingPopupOpenStartedAt = -1;
+let belongingPopupOpenDuration = 680;
+
 let landPopupOpen = false;
 let landVideo;
 let belongingActiveDoorId = null;
@@ -512,6 +517,28 @@ let homeArabicText = "البيت ليس مكانًا نعود إليه دائم�
 
 let homeHebrewText = "בית אינו מקום שאנו חוזרים אליו תמיד, אלא טקס שמכיר אותנו עוד לפני שאנו אפילו קוראים לו בשמו. יכול להיות תנועה שקטה, הרגל חוזר, או רגע שמקל את המרחק מהבית. שאינו מופיע ככתובת, אלא כמשהו שנשאר בתוכנו.";
 
+let belongingArabicText = `أقف في المكان الذي يلتقي فيه عَلَمان،
+لكنّهما لا يتحوّلان إلى بيت.
+
+أحاول أن أنتمي،
+لكن مع كلّ اختيار
+يبقى جزءٌ منّي خارج الإطار.
+
+بين الانتماء والفقدان،
+لا ينقصني عَلَم،
+بل ينقصني مكان
+لا يطلب منّي أن أختار.`;
+
+let belongingHebrewText = `אני עומדת במקום שבו שני דגלים נפגשים,
+אך אינם הופכים לבית.
+
+אני מנסה להשתייך,
+אבל בכל בחירה
+נשאר חלק ממני מחוץ למסגרת.
+
+בין שייכות לאובדן,
+לא חסר לי דגל
+חסר לי מקום שלא דורש ממני לבחור.`;
 
 let clothesArabicText = "كثيرًا ما يقرأني الناس من خلال مظهري قبل أن يعرفوا أي شيء عني. يخمّنون ديني، وأصلي، وما إذا كنت أبدو عربية بما يكفي. بين ما قد يتوقعه الناس وبين الطريقة التي أتحرك بها فعلًا في العالم، يصبح اللباس مساحة يحاول الآخرون من خلالها أن يعرّفوني.";
 
@@ -528,7 +555,8 @@ let arabicTargetLabels = [
   "بيت",
   "انعكاس",
   "ذاكرة",
-  "لغة"
+  "لغة",
+  "انتماء"
 ];
 
 let hebrewTargetLabels = [
@@ -536,7 +564,8 @@ let hebrewTargetLabels = [
   "בית",
   "השתקפות",
   "זיכרון",
-  "שפה"
+  "שפה",
+  "שייכות"
 ];
 
 let targetWords = arabicTargetLabels.concat(hebrewTargetLabels);
@@ -546,7 +575,8 @@ let coreWordPairs = [
   { hebrew: "בית", arabic: "بيت" },
   { hebrew: "השתקפות", arabic: "انعكاس" },
   { hebrew: "זיכרון", arabic: "ذاكرة" },
-  { hebrew: "שפה", arabic: "لغة" }
+  { hebrew: "שפה", arabic: "لغة" },
+  { hebrew: "שייכות", arabic: "انتماء" }
 ];
 
 
@@ -628,6 +658,18 @@ function setup() {
     function() { console.log("MISSING FILE: me without.png (put it in the same folder as sketch.js)"); }
   );
 
+  belongingCyanImg = loadImage(
+    "signds.png",
+    function() { console.log("OK: loaded signds.png"); },
+    function() { console.log("MISSING FILE: signds.png (put it in the same folder as sketch.js)"); }
+  );
+
+  belongingRedImg = loadImage(
+    "signdi.png",
+    function() { console.log("OK: loaded signdi.png"); },
+    function() { console.log("MISSING FILE: signdi.png (put it in the same folder as sketch.js)"); }
+  );
+
   pixelDensity(getSharpRenderDensity());
   createCanvas(windowWidth, windowHeight);
   configureSharpCanvasElement();
@@ -692,7 +734,7 @@ function draw() {
   updateIntroAutoTransition();
 
   if (belongingPopupOpen) {
-    drawBelongingDoorsScreen();
+    drawBelongingScreen();
     return;
   }
 
@@ -4312,31 +4354,7 @@ function mousePressed() {
   }
 
   if (belongingPopupOpen) {
-    if (isInsideBelongingExitButton(mouseX, mouseY)) {
-      closeBelongingDoorsScreen();
-      return;
-    }
-
-    if (belongingActiveDoorId) {
-      let layout = getBelongingActivePanelLayout();
-      let btn = getBelongingContinueButtonRect(layout);
-
-      if (isPointInsideRect(mouseX, mouseY, btn.x, btn.y, btn.w, btn.h)) {
-        closeBelongingActivePanel();
-      }
-
-      return;
-    }
-
-    let rects = getBelongingDoorRects();
-
-    for (let r of rects) {
-      if (isPointInsideRect(mouseX, mouseY, r.x, r.y, r.w, r.h)) {
-        openBelongingDoor(r.door.id);
-        return;
-      }
-    }
-
+    // The shared top-bar title is handled above and returns to the main grid.
     return;
   }
 
@@ -5281,6 +5299,8 @@ function isInsideMemoryCloseButton(mx, my) {
 
 function openBelongingDoorsScreen() {
   belongingPopupOpen = true;
+  belongingPopupOpenStartedAt = millis();
+  belongingActiveDoorId = null;
 
   memoryPopupOpen = false;
   homePopupOpen = false;
@@ -5397,6 +5417,196 @@ function getBelongingContinueButtonRect(layout) {
   let btnY = layout.panelY + layout.panelH - btnH - layout.panelH * 0.06;
 
   return { x: btnX, y: btnY, w: btnW, h: btnH };
+}
+
+
+function drawBelongingScreen() {
+  background(238);
+
+  let headerH = getHeaderHeight();
+  let footerH = getFooterHeight();
+  let contentTop = headerH + max(28, height * 0.045);
+  let contentBottom = height - footerH - max(22, height * 0.035);
+  let contentH = max(120, contentBottom - contentTop);
+
+  let outerMargin = max(28, width * 0.045);
+  let gap = max(28, width * 0.035);
+  let textW = width * 0.43;
+  let imageAreaX = outerMargin + textW + gap;
+  let imageAreaW = width - imageAreaX - outerMargin;
+
+  let rawProgress = constrain(
+    (millis() - belongingPopupOpenStartedAt) / belongingPopupOpenDuration,
+    0,
+    1
+  );
+  let progress = easeInOutCubic(rawProgress);
+
+  push();
+  resetMatrix();
+
+  translate(0, (1 - progress) * 14);
+
+  drawBelongingOverlayTextScreen(
+    outerMargin,
+    contentTop,
+    textW,
+    contentH,
+    progress
+  );
+
+  drawBelongingLayeredImage(
+    imageAreaX,
+    contentTop,
+    imageAreaW,
+    contentH,
+    progress
+  );
+
+  pop();
+
+  // Keep navigation identical to the rest of the project.
+  drawTopBar(255);
+  drawSharedFooter(255);
+}
+
+function drawBelongingOverlayTextScreen(x, y, w, h, progress) {
+  let arabicLines = [
+    "أقف في المكان الذي يلتقي فيه عَلَمان،",
+    "لكنّهما لا يتحوّلان إلى بيت.",
+    "",
+    "أحاول أن أنتمي،",
+    "لكن مع كلّ اختيار",
+    "يبقى جزءٌ منّي خارج الإطار.",
+    "",
+    "بين الانتماء والفقدان،",
+    "لا ينقصني عَلَم،",
+    "بل ينقصني مكان",
+    "لا يطلب منّي أن أختار."
+  ];
+
+  let hebrewLines = [
+    "אני עומדת במקום שבו שני דגלים נפגשים,",
+    "אך אינם הופכים לבית.",
+    "",
+    "אני מנסה להשתייך,",
+    "אבל בכל בחירה",
+    "נשאר חלק ממני מחוץ למסגרת.",
+    "",
+    "בין שייכות לאובדן,",
+    "לא חסר לי דגל",
+    "חסר לי מקום",
+    "שלא דורש ממני לבחור."
+  ];
+
+  let fontSize = constrain(
+    min(w * 0.075, h / 15.7),
+    18,
+    48
+  );
+
+  let lineHeight = fontSize * 1.08;
+  let blankHeight = fontSize * 0.62;
+  let totalHeight = 0;
+
+  for (let i = 0; i < arabicLines.length; i++) {
+    totalHeight += arabicLines[i] === "" ? blankHeight : lineHeight;
+  }
+
+  let startY = y + max(0, (h - totalHeight) * 0.5);
+  let centerX = x + w * 0.5;
+  let ctx = drawingContext;
+
+  ctx.save();
+  ctx.globalCompositeOperation = "multiply";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+  ctx.font = getSimplerCanvasFont(fontSize);
+  ctx.direction = "rtl";
+
+  let currentY = startY;
+
+  for (let i = 0; i < arabicLines.length; i++) {
+    let arLine = arabicLines[i];
+    let heLine = hebrewLines[i];
+
+    if (arLine === "" && heLine === "") {
+      currentY += blankHeight;
+      continue;
+    }
+
+    ctx.fillStyle = "rgba(255,53,53," + (0.96 * progress) + ")";
+    ctx.fillText(arLine, centerX + 2.2, currentY - 1.5);
+
+    ctx.fillStyle = "rgba(46,245,255," + (0.98 * progress) + ")";
+    ctx.fillText(heLine, centerX - 2.2, currentY + 2.6);
+
+    currentY += lineHeight;
+  }
+
+  ctx.restore();
+}
+
+function drawBelongingLayeredImage(x, y, w, h, progress) {
+  if (!belongingCyanImg && !belongingRedImg) return;
+
+  let referenceImg = belongingCyanImg || belongingRedImg;
+  let imageAspect = referenceImg.width / referenceImg.height;
+  let drawH = h;
+  let drawW = drawH * imageAspect;
+
+  if (drawW > w) {
+    drawW = w;
+    drawH = drawW / imageAspect;
+  }
+
+  let drawX = x + (w - drawW) * 0.5;
+  let drawY = y + (h - drawH) * 0.5;
+
+  push();
+  imageMode(CORNER);
+
+  drawingContext.save();
+  drawingContext.globalCompositeOperation = "source-over";
+
+  if (belongingCyanImg) {
+    tint(255, 255 * progress);
+    image(
+      belongingCyanImg,
+      drawX - 2.4,
+      drawY + 1.2,
+      drawW,
+      drawH
+    );
+    noTint();
+  }
+
+  drawingContext.globalCompositeOperation = "multiply";
+
+  if (belongingRedImg) {
+    tint(255, 255 * progress);
+    image(
+      belongingRedImg,
+      drawX + 2.4,
+      drawY - 1.2,
+      drawW,
+      drawH
+    );
+    noTint();
+  }
+
+  drawingContext.restore();
+
+  noFill();
+  strokeWeight(1);
+
+  stroke(46, 245, 255, 225 * progress);
+  rect(drawX - 2.4, drawY + 1.2, drawW, drawH);
+
+  stroke(255, 53, 53, 210 * progress);
+  rect(drawX + 2.4, drawY - 1.2, drawW, drawH);
+
+  pop();
 }
 
 function drawBelongingDoorsScreen() {
