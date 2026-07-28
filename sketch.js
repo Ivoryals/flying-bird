@@ -245,7 +245,7 @@ let memoryLastTime = 0;
 let memoryCanvasElement;
 
 // Decorative SVG used by the redesigned memory interface.
-// Keep curtain_holder.svg beside sketch.js.
+// Keep curtain holder.svg beside sketch.js.
 let memoryCurtainHolderSvg = null;
 let memoryCurtainHolderReady = false;
 
@@ -2801,14 +2801,16 @@ function setupBorderScreenDom() {
   const cyanImage = document.createElement("img");
   cyanImage.src = "border.jpg";
   cyanImage.alt = "Border image layer";
+  cyanImage.addEventListener("error", function() {
+    console.log("MISSING FILE: border.jpg (put it beside sketch.js)");
+  });
 
   const redImage = document.createElement("img");
-  redImage.src = "no border.png";
+  // Match the exact GitHub filename and extension. GitHub Pages is case-sensitive.
+  redImage.src = "no border.jpg";
   redImage.alt = "No-border image layer";
   redImage.addEventListener("error", function() {
-    if (redImage.dataset.fallbackTried === "true") return;
-    redImage.dataset.fallbackTried = "true";
-    redImage.src = "no border(1).png";
+    console.log("MISSING FILE: no border.jpg (put it beside sketch.js)");
   });
 
   borderScreenImagePanel.appendChild(cyanImage);
@@ -2821,6 +2823,16 @@ function setupBorderScreenDom() {
   borderSvg.className = "pagmar-border-svg";
   borderSvg.src = "border.svg";
   borderSvg.alt = "Border constellation path";
+  borderSvg.addEventListener("load", function() {
+    // Keep the invisible point buttons aligned even if border.svg was re-exported
+    // with a different intrinsic canvas size.
+    if (borderSvg.naturalWidth > 0 && borderSvg.naturalHeight > 0) {
+      board.style.aspectRatio = borderSvg.naturalWidth + " / " + borderSvg.naturalHeight;
+    }
+  });
+  borderSvg.addEventListener("error", function() {
+    console.log("MISSING FILE: border.svg (put it beside sketch.js)");
+  });
 
   borderScreenTextPanel = document.createElement("div");
   borderScreenTextPanel.className = "pagmar-border-text-panel";
@@ -2875,6 +2887,7 @@ function setupBorderScreenDom() {
   borderScreenAudio.addEventListener("error", function() {
     console.log("MISSING FILE: boom.mp3 (put it beside sketch.js)");
   });
+  borderScreenAudio.load();
 
   updateBorderScreenDomLayout();
 }
@@ -2884,11 +2897,34 @@ function createBorderScreenHotspot(extraClass, label, onActivate) {
   button.type = "button";
   button.className = "pagmar-border-hotspot " + extraClass;
   button.setAttribute("aria-label", label);
-  button.addEventListener("click", function(event) {
-    event.preventDefault();
-    event.stopPropagation();
+
+  let lastPointerActivationAt = 0;
+
+  function activateBorderHotspot(event) {
+    if (event) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
     onActivate();
+  }
+
+  // pointerup responds immediately and reliably on the exhibition touchscreen.
+  button.addEventListener("pointerup", function(event) {
+    lastPointerActivationAt = performance.now();
+    activateBorderHotspot(event);
   });
+
+  // Keep click as keyboard/mouse fallback, but prevent the synthetic click that
+  // follows pointerup from activating the same point twice.
+  button.addEventListener("click", function(event) {
+    if (performance.now() - lastPointerActivationAt < 500) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    activateBorderHotspot(event);
+  });
+
   return button;
 }
 
@@ -2908,12 +2944,17 @@ function playBorderScreenSound() {
   if (!borderScreenAudio) return;
 
   try {
+    borderScreenAudio.pause();
     borderScreenAudio.currentTime = 0;
     const playPromise = borderScreenAudio.play();
     if (playPromise && typeof playPromise.catch === "function") {
-      playPromise.catch(function() {});
+      playPromise.catch(function(error) {
+        console.log("Could not play boom.mp3:", error);
+      });
     }
-  } catch (error) {}
+  } catch (error) {
+    console.log("Could not play boom.mp3:", error);
+  }
 }
 
 function resetBorderScreenDom() {
@@ -6127,9 +6168,9 @@ function loadMemoryCurtainHolderSvg() {
   };
   memoryCurtainHolderSvg.onerror = function() {
     memoryCurtainHolderReady = false;
-    console.log("MISSING FILE: curtain_holder.svg (put it beside sketch.js)");
+    console.log("MISSING FILE: curtain holder.svg (put it beside sketch.js)");
   };
-  memoryCurtainHolderSvg.src = "curtain_holder.svg";
+  memoryCurtainHolderSvg.src = "curtain holder.svg";
 }
 
 function getMemoryCurtainLayout() {
