@@ -35,6 +35,164 @@ const PAGMAR_DISPLAY_FONT_FAMILY = "AlfaBravo-Medium";
   document.head.appendChild(style);
 })();
 
+// ---- Shared interface audio -------------------------------------------------
+// Keep introsoundloop.mp3 and click.mp3 in the same folder as sketch.js.
+// Native HTMLAudio is used so this works without the p5.sound library.
+(function installPagmarAudioSystem() {
+  if (typeof window === "undefined" || typeof document === "undefined") return;
+  if (window.PagmarAudio) return;
+
+  const INTRO_SOUND_FILE = "introsoundloop.mp3";
+  const CLICK_SOUND_FILE = "click.mp3";
+  const INTRO_VOLUME = 0.58;
+  const CLICK_VOLUME = 0.8;
+
+  let introAudio = null;
+  let clickAudio = null;
+  let introShouldPlay = true;
+  let introFadeFrame = null;
+
+  function createAudio(fileName, loop) {
+    const audio = new Audio(fileName);
+    audio.preload = "auto";
+    audio.loop = !!loop;
+    audio.playsInline = true;
+    audio.setAttribute("playsinline", "");
+    audio.addEventListener("error", function() {
+      console.log("MISSING FILE: " + fileName + " (put it in the same folder as sketch.js)");
+    });
+    return audio;
+  }
+
+  function ensureIntroAudio() {
+    if (!introAudio) {
+      introAudio = createAudio(INTRO_SOUND_FILE, true);
+      introAudio.volume = INTRO_VOLUME;
+    }
+    return introAudio;
+  }
+
+  function ensureClickAudio() {
+    if (!clickAudio) {
+      clickAudio = createAudio(CLICK_SOUND_FILE, false);
+      clickAudio.volume = CLICK_VOLUME;
+    }
+    return clickAudio;
+  }
+
+  function startIntroSound() {
+    if (!introShouldPlay) return;
+
+    const audio = ensureIntroAudio();
+
+    if (introFadeFrame !== null) {
+      cancelAnimationFrame(introFadeFrame);
+      introFadeFrame = null;
+    }
+
+    audio.loop = true;
+    audio.volume = INTRO_VOLUME;
+
+    if (!audio.paused) return;
+
+    try {
+      const playPromise = audio.play();
+      if (playPromise && typeof playPromise.catch === "function") {
+        // Browsers may block audible autoplay. The global gesture listeners
+        // below retry on the visitor's first touch, click, or key press.
+        playPromise.catch(function() {});
+      }
+    } catch (error) {}
+  }
+
+  function fadeOutIntroSound(durationMs) {
+    introShouldPlay = false;
+
+    if (!introAudio) return;
+
+    const duration = Math.max(0, Number(durationMs) || 0);
+    const audio = introAudio;
+
+    if (introFadeFrame !== null) {
+      cancelAnimationFrame(introFadeFrame);
+      introFadeFrame = null;
+    }
+
+    if (audio.paused || duration === 0) {
+      audio.pause();
+      audio.currentTime = 0;
+      audio.volume = INTRO_VOLUME;
+      return;
+    }
+
+    const startVolume = audio.volume;
+    const startTime = performance.now();
+
+    function fadeStep(now) {
+      const progress = Math.min(1, (now - startTime) / duration);
+      audio.volume = Math.max(0, startVolume * (1 - progress));
+
+      if (progress < 1 && introShouldPlay === false) {
+        introFadeFrame = requestAnimationFrame(fadeStep);
+        return;
+      }
+
+      audio.pause();
+      audio.currentTime = 0;
+      audio.volume = INTRO_VOLUME;
+      introFadeFrame = null;
+    }
+
+    introFadeFrame = requestAnimationFrame(fadeStep);
+  }
+
+  function playClickSound() {
+    const audio = ensureClickAudio();
+
+    try {
+      audio.pause();
+      audio.currentTime = 0;
+      audio.volume = CLICK_VOLUME;
+
+      const playPromise = audio.play();
+      if (playPromise && typeof playPromise.catch === "function") {
+        playPromise.catch(function() {});
+      }
+    } catch (error) {}
+  }
+
+  function retryIntroSoundFromGesture() {
+    if (introShouldPlay) startIntroSound();
+  }
+
+  window.addEventListener("pointerdown", retryIntroSoundFromGesture, {
+    capture: true,
+    passive: true
+  });
+  window.addEventListener("touchstart", retryIntroSoundFromGesture, {
+    capture: true,
+    passive: true
+  });
+  window.addEventListener("keydown", retryIntroSoundFromGesture, {
+    capture: true,
+    passive: true
+  });
+
+  window.PagmarAudio = {
+    startIntroSound: startIntroSound,
+    fadeOutIntroSound: fadeOutIntroSound,
+    playClickSound: playClickSound
+  };
+
+  // Attempt autoplay for kiosk browsers configured to allow it. Standard
+  // browsers will retry on the visitor's first interaction instead.
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", startIntroSound, { once: true });
+  } else {
+    setTimeout(startIntroSound, 0);
+  }
+})();
+
 // The English intro screen has been removed: the piece now opens
 // directly on the letter field.
 let screenMode = "game";
@@ -4484,6 +4642,10 @@ function getNearestVisualCell(px, py) {
 function checkSelection() {
   if (currentSelection.length < 2) return;
 
+  if (typeof window !== "undefined" && window.PagmarAudio && typeof window.PagmarAudio.playClickSound === "function") {
+    window.PagmarAudio.playClickSound();
+  }
+
   let hebrewSelectedWord = normalizeWord(getWordFromCellsInGrid(currentSelection, hebrewGridRows));
   let hebrewReversedWord = normalizeWord(getReversedWordFromCellsInGrid(currentSelection, hebrewGridRows));
   let arabicSelectedWord = normalizeWord(getWordFromCellsInGrid(currentSelection, arabicGridRows));
@@ -7536,6 +7698,10 @@ window.hidePagmarSharedLens = hideSharedPagmarLens;
     birdRoot.appendChild(birdCanvas);
     document.body.appendChild(birdRoot);
 
+    if (window.PagmarAudio && typeof window.PagmarAudio.startIntroSound === "function") {
+      window.PagmarAudio.startIntroSound();
+    }
+
     birdSampler = document.createElement("canvas");
     birdSampler.width = BIRD_CONFIG.cols;
     birdSampler.height = BIRD_CONFIG.rows;
@@ -8531,6 +8697,10 @@ window.hidePagmarSharedLens = hideSharedPagmarLens;
 
   function requestBirdExit() {
     if (birdExitingAt >= 0) return;
+
+    if (window.PagmarAudio && typeof window.PagmarAudio.fadeOutIntroSound === "function") {
+      window.PagmarAudio.fadeOutIntroSound(BIRD_CONFIG.exitDurationMs);
+    }
 
     birdExitingAt = birdNow();
     // Keep the bird fully opaque until a genuinely blank grid frame has been
