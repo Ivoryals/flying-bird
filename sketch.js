@@ -7332,6 +7332,11 @@ window.hidePagmarSharedLens = hideSharedPagmarLens;
     cols: 96,
     rows: 54,
 
+    // Interaction renders at 60 FPS while video pixels are sampled separately.
+    renderIntervalMs: 16,
+    videoSampleIntervalMs: 33,
+    touchDprCap: 1.5,
+
     // Change to false when the bird is bright against a dark background.
     birdIsDark: true,
     cutoff: (255 - 174) / 255,
@@ -7427,6 +7432,7 @@ window.hidePagmarSharedLens = hideSharedPagmarLens;
   // Keep the last successfully sampled silhouette during video seeking.
   // This prevents the temporary fallback circle from flashing at the loop cut.
   var birdLastVideoPresence = null;
+  var birdLastVideoSampleAt = -Infinity;
   var birdLoopSeeking = false;
 
   var birdPointer = {
@@ -7573,6 +7579,7 @@ window.hidePagmarSharedLens = hideSharedPagmarLens;
     }
 
     birdLastVideoPresence = null;
+    birdLastVideoSampleAt = -Infinity;
     birdLoopSeeking = false;
     birdVideo.src = BIRD_CONFIG.videoFiles[birdSourceIndex];
     playBirdVideo();
@@ -7663,7 +7670,11 @@ window.hidePagmarSharedLens = hideSharedPagmarLens;
   function resizeBirdCanvas() {
     if (!birdCanvas || !birdCtx) return;
 
-    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var coarsePointer =
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(pointer: coarse)").matches;
+    var dprCap = coarsePointer ? BIRD_CONFIG.touchDprCap : 2;
+    var dpr = Math.min(window.devicePixelRatio || 1, dprCap);
     birdCanvas.width = Math.max(1, Math.round(window.innerWidth * dpr));
     birdCanvas.height = Math.max(1, Math.round(window.innerHeight * dpr));
     birdCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -7822,7 +7833,7 @@ window.hidePagmarSharedLens = hideSharedPagmarLens;
 
     var now = birdNow();
 
-    if (now - birdLastFrameAt >= 32) {
+    if (now - birdLastFrameAt >= BIRD_CONFIG.renderIntervalMs) {
       birdLastFrameAt = now;
       renderBird(now);
     }
@@ -7847,8 +7858,12 @@ window.hidePagmarSharedLens = hideSharedPagmarLens;
 
     birdCtx.setTransform(1, 0, 0, 1, 0, 0);
 
-    // Account for the high-resolution backing canvas.
-    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    // Account for the backing canvas using the same touch-performance cap.
+    var coarsePointer =
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(pointer: coarse)").matches;
+    var dprCap = coarsePointer ? BIRD_CONFIG.touchDprCap : 2;
+    var dpr = Math.min(window.devicePixelRatio || 1, dprCap);
     birdCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     birdCtx.fillStyle = BIRD_CONFIG.background;
@@ -7944,9 +7959,11 @@ window.hidePagmarSharedLens = hideSharedPagmarLens;
     if (birdPointer.down && !birdPointer.promptDrag) {
       var dx = baseX + item.offsetX - birdPointer.x;
       var dy = baseY + item.offsetY - birdPointer.y;
-      var distance = Math.sqrt(dx * dx + dy * dy);
+      var distanceSquared = dx * dx + dy * dy;
+      var radiusSquared = BIRD_CONFIG.touchRadius * BIRD_CONFIG.touchRadius;
 
-      if (distance < BIRD_CONFIG.touchRadius) {
+      if (distanceSquared < radiusSquared) {
+        var distance = Math.sqrt(distanceSquared);
         var safeDistance = Math.max(0.001, distance);
         var pressure = 1 - distance / BIRD_CONFIG.touchRadius;
         // Softer exponent makes the outer part of the touch radius react too,
@@ -7998,6 +8015,14 @@ window.hidePagmarSharedLens = hideSharedPagmarLens;
       return birdLastVideoPresence;
     }
 
+    var sampleNow = birdNow();
+    if (
+      birdLastVideoPresence &&
+      sampleNow - birdLastVideoSampleAt < BIRD_CONFIG.videoSampleIntervalMs
+    ) {
+      return birdLastVideoPresence;
+    }
+
     try {
       birdSamplerCtx.drawImage(
         birdVideo,
@@ -8046,6 +8071,7 @@ window.hidePagmarSharedLens = hideSharedPagmarLens;
     }
 
     birdLastVideoPresence = output;
+    birdLastVideoSampleAt = sampleNow;
     return output;
   }
 
