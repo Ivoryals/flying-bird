@@ -245,7 +245,7 @@ let memoryLastTime = 0;
 let memoryCanvasElement;
 
 // Decorative SVG used by the redesigned memory interface.
-// Keep curtain holder.svg beside sketch.js.
+// Keep curtainholder.svg beside sketch.js.
 let memoryCurtainHolderSvg = null;
 let memoryCurtainHolderReady = false;
 
@@ -6168,9 +6168,9 @@ function loadMemoryCurtainHolderSvg() {
   };
   memoryCurtainHolderSvg.onerror = function() {
     memoryCurtainHolderReady = false;
-    console.log("MISSING FILE: curtain holder.svg (put it beside sketch.js)");
+    console.log("MISSING FILE: curtainholder.svg (put it beside sketch.js)");
   };
-  memoryCurtainHolderSvg.src = "curtain holder.svg";
+  memoryCurtainHolderSvg.src = "curtainholder.svg";
 }
 
 function getMemoryCurtainLayout() {
