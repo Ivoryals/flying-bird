@@ -7384,8 +7384,8 @@ window.hidePagmarSharedLens = hideSharedPagmarLens;
 
   // Both language scripts occupy the same prompt position, producing
   // the same red/cyan registration seen in the reference image.
-  var HEBREW_DRAG_PROMPT = "התחיל לחפש";
-  var ARABIC_DRAG_PROMPT = "أبدأ البحث";
+  var HEBREW_DRAG_PROMPT = "החלק לחפש";
+  var ARABIC_DRAG_PROMPT = "أسحبو للبحث";
 
   var BIRD_HEBREW_LETTERS = Array.from("ציפורמעופפת");
 
