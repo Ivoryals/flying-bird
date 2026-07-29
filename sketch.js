@@ -7800,6 +7800,14 @@ window.hidePagmarSharedLens = hideSharedPagmarLens;
     promptTypeDelayMs: 260,
     promptTypeCharsPerSecond: 28,
 
+    // Automatic gesture demo shown after the drag prompt has finished typing.
+    // It uses the same right-to-left direction required by the real interaction.
+    promptDemoDelayMs: 650,
+    promptDemoTravelMs: 1350,
+    promptDemoHoldMs: 320,
+    promptDemoFadeMs: 360,
+    promptDemoPauseMs: 700,
+
     // The prompt is RTL, so the user must begin near its right edge and
     // slide almost all the way to its left edge before the field opens.
     promptStartZoneRatio: 0.24,
@@ -7819,7 +7827,7 @@ window.hidePagmarSharedLens = hideSharedPagmarLens;
   // Both language scripts occupy the same prompt position, producing
   // the same red/cyan registration seen in the reference image.
   var HEBREW_DRAG_PROMPT = "החלק לחפש";
-  var ARABIC_DRAG_PROMPT = "أسحبو للبحث";
+  var ARABIC_DRAG_PROMPT = "اسحب للبحث";
 
   var BIRD_HEBREW_LETTERS = Array.from("ציפורמעופפת");
 
@@ -8297,7 +8305,10 @@ window.hidePagmarSharedLens = hideSharedPagmarLens;
       drawReferencePrompt(now);
 
       if (birdPointer.down && birdPointer.promptDrag) {
+        // Real visitor gesture always replaces the automatic demonstration.
         drawPromptDragCapsule(now);
+      } else if (isBirdPromptReady(now)) {
+        drawPromptDemoCapsule(now);
       }
     }
 
@@ -8842,6 +8853,120 @@ window.hidePagmarSharedLens = hideSharedPagmarLens;
       width: layout.totalWidth + sidePadding * 2,
       height: layout.bottom - layout.top + verticalPadding * 2
     };
+  }
+
+  function getBirdPromptReadyAt() {
+    if (birdTextRevealStartedAt < 0) return Infinity;
+
+    var firstLineLength = Math.max(
+      splitBirdText(HEBREW_LINE_1).length,
+      splitBirdText(ARABIC_LINE_1).length
+    );
+    var firstLineDuration =
+      (firstLineLength / BIRD_CONFIG.statementTypeCharsPerSecond) * 1000;
+
+    var secondLineLength = Math.max(
+      splitBirdText(HEBREW_LINE_2).length,
+      splitBirdText(ARABIC_LINE_2).length
+    );
+    var secondLineDuration =
+      (secondLineLength / BIRD_CONFIG.statementTypeCharsPerSecond) * 1000;
+
+    var promptLength = Math.max(
+      splitBirdText(HEBREW_DRAG_PROMPT).length,
+      splitBirdText(ARABIC_DRAG_PROMPT).length
+    );
+    var promptDuration =
+      (promptLength / BIRD_CONFIG.promptTypeCharsPerSecond) * 1000;
+
+    return (
+      birdTextRevealStartedAt +
+      BIRD_CONFIG.statementTypeDelayMs +
+      firstLineDuration +
+      BIRD_CONFIG.statementLineGapMs +
+      secondLineDuration +
+      BIRD_CONFIG.promptTypeDelayMs +
+      promptDuration
+    );
+  }
+
+  function drawPromptDemoCapsule(now) {
+    var readyAt = getBirdPromptReadyAt();
+    var elapsed = now - readyAt - BIRD_CONFIG.promptDemoDelayMs;
+
+    if (elapsed < 0) return;
+
+    var travel = BIRD_CONFIG.promptDemoTravelMs;
+    var hold = BIRD_CONFIG.promptDemoHoldMs;
+    var fade = BIRD_CONFIG.promptDemoFadeMs;
+    var pause = BIRD_CONFIG.promptDemoPauseMs;
+    var cycleDuration = travel + hold + fade + pause;
+    var cycleTime = elapsed % cycleDuration;
+
+    if (cycleTime >= travel + hold + fade) return;
+
+    var progress = 1;
+    var alpha = 1;
+
+    if (cycleTime < travel) {
+      var rawProgress = clampBird(cycleTime / travel, 0, 1);
+      // Smooth acceleration and deceleration, like a deliberate finger slide.
+      progress = rawProgress * rawProgress * (3 - 2 * rawProgress);
+    } else if (cycleTime < travel + hold) {
+      progress = 1;
+    } else {
+      progress = 1;
+      alpha = 1 - clampBird((cycleTime - travel - hold) / fade, 0, 1);
+    }
+
+    var prompt = getPromptHitRect();
+    var lineWeight = Math.max(0.9, BIRD_CONFIG.promptFontSize * 0.028);
+    var dashLength = Math.max(7, BIRD_CONFIG.promptFontSize * 0.33);
+    var dashGap = Math.max(6, BIRD_CONFIG.promptFontSize * 0.28);
+    var minimumWidth = BIRD_CONFIG.promptFontSize * 0.72;
+    var selectedWidth = Math.max(minimumWidth, prompt.width * progress);
+
+    // The rectangle begins at the prompt's right edge and expands leftward,
+    // matching the actual RTL slide the visitor must perform.
+    var boxX = prompt.x + prompt.width - selectedWidth;
+    var boxY = prompt.y + 8;
+    var boxW = selectedWidth;
+    var boxH = prompt.height - 16;
+    var radius = boxH / 2;
+
+    birdCtx.save();
+    birdCtx.globalAlpha = 0.76 * alpha;
+    birdCtx.strokeStyle = BIRD_CONFIG.ink;
+    birdCtx.lineWidth = lineWeight;
+    birdCtx.setLineDash([dashLength, dashGap]);
+    birdCtx.lineDashOffset = -cycleTime * 0.012;
+    birdCtx.lineJoin = "round";
+    birdCtx.lineCap = "round";
+
+    birdCtx.beginPath();
+    roundedBirdRectPath(
+      birdCtx,
+      boxX,
+      boxY,
+      boxW,
+      boxH,
+      radius
+    );
+    birdCtx.stroke();
+
+    // A small point travels with the leading edge so the required gesture reads
+    // as movement rather than as a decorative outline.
+    var pointerX = prompt.x + prompt.width - prompt.width * progress;
+    var pointerY = boxY + boxH / 2;
+    var pointerRadius = Math.max(2.2, BIRD_CONFIG.promptFontSize * 0.3);
+
+    birdCtx.setLineDash([]);
+    birdCtx.globalAlpha = alpha;
+    birdCtx.fillStyle = BIRD_CONFIG.ink;
+    birdCtx.beginPath();
+    birdCtx.arc(pointerX, pointerY, pointerRadius, 0, Math.PI * 2);
+    birdCtx.fill();
+    birdCtx.restore();
   }
 
   function drawPromptDragCapsule(now) {
