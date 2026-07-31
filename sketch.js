@@ -266,6 +266,16 @@ let openWordColor;
 let currentSelection = [];
 let foundWords = [];
 
+// Touch-screen word selection tuning.
+// These values affect hit testing only; the grid layout and visuals stay unchanged.
+const GRID_MOUSE_HIT_RADIUS_PX = 18;
+const GRID_TOUCH_HIT_RADIUS_PX = 34;
+const GRID_TOUCH_ROW_LOCK_PX = 64;
+const GRID_SELECTION_EXTRA_CELL_TOLERANCE = 1;
+
+let gridTouchPointerActive = false;
+let gridTouchPointerId = null;
+
 let svgGridRows = []; // compatibility alias to the Hebrew layer
 let hebrewGridRows = [];
 let arabicGridRows = [];
@@ -4616,7 +4626,20 @@ function isInsideBlurPopupClose(mx, my) {
 
 function addCellUnderMouse() {
   let p = screenToDesign(mouseX, mouseY);
-  let nearestCell = getNearestVisualCell(p.x, p.y);
+  let nearestCell = null;
+
+  if (currentSelection.length === 0) {
+    nearestCell = getNearestVisualCell(p.x, p.y, gridTouchPointerActive);
+  } else {
+    // Once a drag begins, keep it locked to the starting row. A finger naturally
+    // drifts vertically on a touch screen; previously that made the selection stop.
+    nearestCell = getNearestVisualCellOnRow(
+      p.x,
+      p.y,
+      currentSelection[0].row,
+      gridTouchPointerActive
+    );
+  }
 
   if (nearestCell === null) return;
 
@@ -4627,20 +4650,16 @@ function addCellUnderMouse() {
 
   let first = currentSelection[0];
 
-  // Only allow same-row selection.
-  if (nearestCell.row !== first.row) return;
-
   // Either horizontal direction is fine — checkSelection() already matches
-  // both the forward and reversed reading of the selection, so requiring a
-  // specific start side here only made valid drags fail depending on which
-  // end someone happened to start from.
+  // both the forward and reversed reading of the selection.
   currentSelection = getCellsBetween(first.row, first.col, first.row, nearestCell.col);
 }
 
-function getNearestVisualCell(px, py) {
+function getNearestVisualCell(px, py, useTouchRadius) {
   let closestCell = null;
   let closestDistance = Infinity;
-  let hitRadius = constrain(12 / max(scaleFactor, 0.001), 4.5, 12);
+  let screenRadius = useTouchRadius ? GRID_TOUCH_HIT_RADIUS_PX : GRID_MOUSE_HIT_RADIUS_PX;
+  let hitRadius = screenRadius / max(scaleFactor, 0.001);
 
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
@@ -4657,6 +4676,39 @@ function getNearestVisualCell(px, py) {
   return closestDistance > hitRadius ? null : closestCell;
 }
 
+function getNearestVisualCellOnRow(px, py, lockedRow, useTouchRadius) {
+  if (lockedRow < 0 || lockedRow >= rows) return null;
+
+  let closestCell = null;
+  let closestHorizontalDistance = Infinity;
+  let closestPoint = null;
+
+  for (let c = 0; c < cols; c++) {
+    let visualPoint = cellToVisualPoint(lockedRow, c);
+    let horizontalDistance = abs(px - visualPoint.x);
+
+    if (horizontalDistance < closestHorizontalDistance) {
+      closestHorizontalDistance = horizontalDistance;
+      closestCell = new SelectionCell(lockedRow, c);
+      closestPoint = visualPoint;
+    }
+  }
+
+  if (closestCell === null || closestPoint === null) return null;
+
+  let verticalToleranceScreen = useTouchRadius
+    ? GRID_TOUCH_ROW_LOCK_PX
+    : GRID_MOUSE_HIT_RADIUS_PX * 1.8;
+
+  let verticalTolerance = verticalToleranceScreen / max(scaleFactor, 0.001);
+
+  // Keep a generous vertical corridor around the original row. This prevents
+  // selection from freezing when a finger moves slightly above or below it.
+  if (abs(py - closestPoint.y) > verticalTolerance) return null;
+
+  return closestCell;
+}
+
 function checkSelection() {
   if (currentSelection.length < 2) return;
 
@@ -4664,26 +4716,47 @@ function checkSelection() {
     window.PagmarAudio.playClickSound();
   }
 
-  let hebrewSelectedWord = normalizeWord(getWordFromCellsInGrid(currentSelection, hebrewGridRows));
-  let hebrewReversedWord = normalizeWord(getReversedWordFromCellsInGrid(currentSelection, hebrewGridRows));
-  let arabicSelectedWord = normalizeWord(getWordFromCellsInGrid(currentSelection, arabicGridRows));
-  let arabicReversedWord = normalizeWord(getReversedWordFromCellsInGrid(currentSelection, arabicGridRows));
+  if (checkExactSelectionCells(currentSelection)) return;
+
+  // Touch selections often begin or end one cell too early because the finger
+  // hides the letter. Try the same selection after trimming up to one cell from
+  // either end. The accepted found-word cells remain exact.
+  for (let trimStart = 0; trimStart <= GRID_SELECTION_EXTRA_CELL_TOLERANCE; trimStart++) {
+    for (let trimEnd = 0; trimEnd <= GRID_SELECTION_EXTRA_CELL_TOLERANCE; trimEnd++) {
+      if (trimStart === 0 && trimEnd === 0) continue;
+
+      let endIndex = currentSelection.length - trimEnd;
+      if (endIndex - trimStart < 2) continue;
+
+      let candidateCells = currentSelection.slice(trimStart, endIndex);
+      if (checkExactSelectionCells(candidateCells)) return;
+    }
+  }
+}
+
+function checkExactSelectionCells(cells) {
+  let hebrewSelectedWord = normalizeWord(getWordFromCellsInGrid(cells, hebrewGridRows));
+  let hebrewReversedWord = normalizeWord(getReversedWordFromCellsInGrid(cells, hebrewGridRows));
+  let arabicSelectedWord = normalizeWord(getWordFromCellsInGrid(cells, arabicGridRows));
+  let arabicReversedWord = normalizeWord(getReversedWordFromCellsInGrid(cells, arabicGridRows));
 
   for (let target of targetWords) {
     let normalizedTarget = normalizeWord(target);
 
     if (isArabicWord(target)) {
       if (arabicSelectedWord === normalizedTarget || arabicReversedWord === normalizedTarget) {
-        addFoundWord(currentSelection, target);
-        return;
+        addFoundWord(cells, target);
+        return true;
       }
     } else {
       if (hebrewSelectedWord === normalizedTarget || hebrewReversedWord === normalizedTarget) {
-        addFoundWord(currentSelection, target);
-        return;
+        addFoundWord(cells, target);
+        return true;
       }
     }
   }
+
+  return false;
 }
 
 function getWordFromCellsInGrid(cells, gridRows) {
@@ -7250,12 +7323,13 @@ class FoundWord {
 
 
 
-// iPad touch support.
-// This does not change the existing mouse logic.
-// It only converts iPad touch events into the same mousePressed / mouseDragged / mouseReleased flow.
+// Touch-screen support.
+// Pointer capture keeps the drag alive even when the finger moves quickly or
+// leaves the canvas bounds. Legacy touch events are suppressed to prevent p5
+// from firing a second, conflicting mouse sequence.
 function setupIpadTouchSupport() {
   setTimeout(function() {
-    let canvasEl = document.querySelector("canvas");
+    let canvasEl = getPagmarMainCanvasElement();
     if (!canvasEl) return;
 
     canvasEl.style.touchAction = "none";
@@ -7270,23 +7344,101 @@ function setupIpadTouchSupport() {
     document.body.style.webkitUserSelect = "none";
     document.body.style.userSelect = "none";
 
-    canvasEl.addEventListener("touchstart", ipadTouchStarted, { passive: false });
-    canvasEl.addEventListener("touchmove", ipadTouchMoved, { passive: false });
-    canvasEl.addEventListener("touchend", ipadTouchEnded, { passive: false });
-    canvasEl.addEventListener("touchcancel", ipadTouchEnded, { passive: false });
+    if (typeof window.PointerEvent !== "undefined") {
+      canvasEl.addEventListener("pointerdown", ipadPointerStarted, {
+        capture: true,
+        passive: false
+      });
+      canvasEl.addEventListener("pointermove", ipadPointerMoved, {
+        capture: true,
+        passive: false
+      });
+      canvasEl.addEventListener("pointerup", ipadPointerEnded, {
+        capture: true,
+        passive: false
+      });
+      canvasEl.addEventListener("pointercancel", ipadPointerEnded, {
+        capture: true,
+        passive: false
+      });
 
-    document.addEventListener("gesturestart", function(e) {
-      e.preventDefault();
-    }, { passive: false });
+      // Stop p5's legacy touch-to-mouse conversion from creating a second
+      // press/release sequence on the same finger gesture.
+      canvasEl.addEventListener("touchstart", suppressLegacyGridTouchEvent, {
+        capture: true,
+        passive: false
+      });
+      canvasEl.addEventListener("touchmove", suppressLegacyGridTouchEvent, {
+        capture: true,
+        passive: false
+      });
+      canvasEl.addEventListener("touchend", suppressLegacyGridTouchEvent, {
+        capture: true,
+        passive: false
+      });
+      canvasEl.addEventListener("touchcancel", suppressLegacyGridTouchEvent, {
+        capture: true,
+        passive: false
+      });
+    } else {
+      canvasEl.addEventListener("touchstart", ipadTouchStarted, {
+        capture: true,
+        passive: false
+      });
+      canvasEl.addEventListener("touchmove", ipadTouchMoved, {
+        capture: true,
+        passive: false
+      });
+      canvasEl.addEventListener("touchend", ipadTouchEnded, {
+        capture: true,
+        passive: false
+      });
+      canvasEl.addEventListener("touchcancel", ipadTouchEnded, {
+        capture: true,
+        passive: false
+      });
+    }
 
-    document.addEventListener("gesturechange", function(e) {
-      e.preventDefault();
-    }, { passive: false });
-
-    document.addEventListener("gestureend", function(e) {
-      e.preventDefault();
-    }, { passive: false });
+    document.addEventListener("gesturestart", preventPagmarGesture, { passive: false });
+    document.addEventListener("gesturechange", preventPagmarGesture, { passive: false });
+    document.addEventListener("gestureend", preventPagmarGesture, { passive: false });
   }, 80);
+}
+
+function getPagmarMainCanvasElement() {
+  return document.querySelector("body > canvas") || document.querySelector("canvas");
+}
+
+function preventPagmarGesture(e) {
+  e.preventDefault();
+}
+
+function consumeGridTouchEvent(e) {
+  if (!e) return;
+  e.preventDefault();
+  e.stopPropagation();
+
+  if (typeof e.stopImmediatePropagation === "function") {
+    e.stopImmediatePropagation();
+  }
+}
+
+function suppressLegacyGridTouchEvent(e) {
+  consumeGridTouchEvent(e);
+  return false;
+}
+
+function ipadCanvasPointFromClient(clientX, clientY) {
+  let canvasEl = getPagmarMainCanvasElement();
+  if (!canvasEl) return null;
+
+  let rect = canvasEl.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return null;
+
+  return {
+    x: (clientX - rect.left) * (width / rect.width),
+    y: (clientY - rect.top) * (height / rect.height)
+  };
 }
 
 function ipadTouchPointFromEvent(e) {
@@ -7299,16 +7451,7 @@ function ipadTouchPointFromEvent(e) {
   }
 
   if (!touch) return null;
-
-  let canvasEl = document.querySelector("canvas");
-  if (!canvasEl) return null;
-
-  let rect = canvasEl.getBoundingClientRect();
-
-  return {
-    x: (touch.clientX - rect.left) * (width / rect.width),
-    y: (touch.clientY - rect.top) * (height / rect.height)
-  };
+  return ipadCanvasPointFromClient(touch.clientX, touch.clientY);
 }
 
 function ipadSetMousePosition(x, y) {
@@ -7318,12 +7461,86 @@ function ipadSetMousePosition(x, y) {
   mouseY = y;
 }
 
+function ipadPointerStarted(e) {
+  if (e.pointerType === "mouse") return;
+  consumeGridTouchEvent(e);
+
+  if (gridTouchPointerActive) return false;
+
+  let p = ipadCanvasPointFromClient(e.clientX, e.clientY);
+  if (!p) return false;
+
+  gridTouchPointerActive = true;
+  gridTouchPointerId = e.pointerId;
+  ipadSetMousePosition(p.x, p.y);
+
+  try {
+    e.currentTarget.setPointerCapture(e.pointerId);
+  } catch (error) {}
+
+  if (typeof mousePressed === "function") {
+    mousePressed();
+  }
+
+  return false;
+}
+
+function ipadPointerMoved(e) {
+  if (!gridTouchPointerActive) return;
+  if (gridTouchPointerId !== null && e.pointerId !== gridTouchPointerId) return;
+
+  consumeGridTouchEvent(e);
+
+  let p = ipadCanvasPointFromClient(e.clientX, e.clientY);
+  if (!p) return false;
+
+  ipadSetMousePosition(p.x, p.y);
+
+  if (typeof mouseDragged === "function") {
+    mouseDragged();
+  }
+
+  return false;
+}
+
+function ipadPointerEnded(e) {
+  if (!gridTouchPointerActive) return;
+  if (gridTouchPointerId !== null && e.pointerId !== gridTouchPointerId) return;
+
+  consumeGridTouchEvent(e);
+
+  let p = ipadCanvasPointFromClient(e.clientX, e.clientY);
+  if (p) {
+    ipadSetMousePosition(p.x, p.y);
+
+    // Process the final finger position before checking the word. Some touch
+    // screens do not emit a last move event immediately before pointerup.
+    if (typeof mouseDragged === "function") {
+      mouseDragged();
+    }
+  }
+
+  if (typeof mouseReleased === "function") {
+    mouseReleased();
+  }
+
+  try {
+    e.currentTarget.releasePointerCapture(e.pointerId);
+  } catch (error) {}
+
+  gridTouchPointerActive = false;
+  gridTouchPointerId = null;
+  return false;
+}
+
+// Fallback for older browsers without Pointer Events.
 function ipadTouchStarted(e) {
-  e.preventDefault();
+  consumeGridTouchEvent(e);
 
   let p = ipadTouchPointFromEvent(e);
   if (!p) return false;
 
+  gridTouchPointerActive = true;
   ipadSetMousePosition(p.x, p.y);
 
   if (typeof mousePressed === "function") {
@@ -7334,7 +7551,7 @@ function ipadTouchStarted(e) {
 }
 
 function ipadTouchMoved(e) {
-  e.preventDefault();
+  consumeGridTouchEvent(e);
 
   let p = ipadTouchPointFromEvent(e);
   if (!p) return false;
@@ -7349,18 +7566,24 @@ function ipadTouchMoved(e) {
 }
 
 function ipadTouchEnded(e) {
-  e.preventDefault();
+  consumeGridTouchEvent(e);
 
   let p = ipadTouchPointFromEvent(e);
 
   if (p) {
     ipadSetMousePosition(p.x, p.y);
+
+    if (typeof mouseDragged === "function") {
+      mouseDragged();
+    }
   }
 
   if (typeof mouseReleased === "function") {
     mouseReleased();
   }
 
+  gridTouchPointerActive = false;
+  gridTouchPointerId = null;
   return false;
 }
 
