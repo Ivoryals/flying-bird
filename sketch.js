@@ -6949,12 +6949,44 @@ function createMemorySystem() {
   }
 }
 
+function drawMemoryWeightedText(g, textValue, x, y, fillValue) {
+  g.fill(fillValue);
+
+  let passes = [
+    [0, 0],
+    [0.42, 0],
+    [-0.42, 0],
+    [0, 0.22],
+    [0, -0.12]
+  ];
+
+  for (let pass of passes) {
+    g.text(textValue, x + pass[0], y + pass[1]);
+  }
+}
+
+function drawMemoryWeightedCanvasText(ctx, textValue, x, y, fillValue) {
+  ctx.fillStyle = fillValue;
+
+  let passes = [
+    [0, 0],
+    [0.46, 0],
+    [-0.46, 0],
+    [0, 0.22],
+    [0, -0.12]
+  ];
+
+  for (let pass of passes) {
+    ctx.fillText(textValue, x + pass[0], y + pass[1]);
+  }
+}
+
 function createMemoryCharCanvases() {
   memoryCharCanvases = {};
   memoryCellCanvases = {};
 
-  let hebrewFontSize = Math.max(7, memoryConfig.baseCellHeight * 1.3);
-  let arabicFontSize = hebrewFontSize * MEMORY_ARABIC_FONT_SCALE;
+  let hebrewFontSize = Math.max(7.4, memoryConfig.baseCellHeight * 1.38);
+  let arabicFontSize = hebrewFontSize * (MEMORY_ARABIC_FONT_SCALE + 0.03);
   let uniqueHebrewChars = new Set();
 
   // Hebrew is rendered as cyan single-character cells.
@@ -6976,12 +7008,16 @@ function createMemoryCharCanvases() {
     g.textSize(hebrewFontSize);
     g.textAlign(CENTER, CENTER);
     g.noStroke();
-    g.fill(MEMORY_HEBREW_COLOR);
-
     g.drawingContext.direction = "rtl";
     g.drawingContext.textRendering = "geometricPrecision";
 
-    g.text(ch, size / 2, size / 2 + hebrewFontSize * 0.04);
+    drawMemoryWeightedText(
+      g,
+      ch,
+      size / 2,
+      size / 2 + hebrewFontSize * 0.04,
+      MEMORY_HEBREW_COLOR
+    );
 
     memoryCharCanvases[ch] = g;
   }
@@ -7075,8 +7111,13 @@ function createMemoryArabicWordSlices(word, rowIndex, logicalStart, cellCount, f
     ctx
   );
 
-  ctx.fillStyle = MEMORY_ARABIC_COLOR;
-  ctx.fillText(forceRTL(stretchedWord), fullW / 2, fullH / 2 + fontSize * 0.04);
+  drawMemoryWeightedCanvasText(
+    ctx,
+    forceRTL(stretchedWord),
+    fullW / 2,
+    fullH / 2 + fontSize * 0.04,
+    MEMORY_ARABIC_COLOR
+  );
 
   let sliceW = Math.ceil(cellW + overlap * 2);
 
@@ -7267,20 +7308,37 @@ function drawMemoryCurtainHolder() {
   if (!memoryCurtainHolderReady || !memoryCurtainHolderSvg) return;
 
   let layout = getMemoryCurtainLayout();
+  let dx = Math.max(1.8, layout.holderW * 0.0024);
+  let dy = Math.max(0.9, layout.holderH * 0.0055);
 
   push();
   resetMatrix();
+  imageMode(CORNER);
+
   drawingContext.save();
-  drawingContext.globalCompositeOperation = "source-over";
+  drawingContext.globalCompositeOperation = "multiply";
   drawingContext.globalAlpha = 1;
   drawingContext.imageSmoothingEnabled = true;
-  drawingContext.drawImage(
+
+  tint(red(redColor), green(redColor), blue(redColor), 238);
+  image(
     memoryCurtainHolderSvg,
-    layout.holderX,
-    layout.holderY,
+    layout.holderX - dx,
+    layout.holderY - dy,
     layout.holderW,
     layout.holderH
   );
+
+  tint(red(blueColor), green(blueColor), blue(blueColor), 238);
+  image(
+    memoryCurtainHolderSvg,
+    layout.holderX + dx,
+    layout.holderY + dy,
+    layout.holderW,
+    layout.holderH
+  );
+
+  noTint();
   drawingContext.restore();
   pop();
 }
