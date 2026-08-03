@@ -247,6 +247,64 @@ function getPagmarScreenType(role) {
   }
 })();
 
+// ---- Shared screen transition ----------------------------------------------
+(function installPagmarScreenTransition() {
+  if (typeof window === "undefined" || typeof document === "undefined") return;
+  if (window.playPagmarScreenTransition) return;
+
+  let overlay = null;
+  let hideTimer = null;
+
+  function ensureOverlay() {
+    if (overlay) return overlay;
+
+    overlay = document.createElement("div");
+    overlay.id = "pagmar-screen-transition";
+    overlay.setAttribute("aria-hidden", "true");
+    overlay.style.position = "fixed";
+    overlay.style.inset = "0";
+    overlay.style.zIndex = "1000004";
+    overlay.style.pointerEvents = "none";
+    overlay.style.opacity = "0";
+    overlay.style.display = "none";
+    overlay.style.background = "#eeeeee";
+    document.body.appendChild(overlay);
+
+    return overlay;
+  }
+
+  function playPagmarScreenTransition(backgroundColor) {
+    const element = ensureOverlay();
+
+    if (hideTimer !== null) {
+      clearTimeout(hideTimer);
+      hideTimer = null;
+    }
+
+    element.style.display = "block";
+    element.style.background = backgroundColor || "#eeeeee";
+    element.style.transition = "none";
+    element.style.opacity = "1";
+
+    // The destination screen is opened behind this layer. The layer then
+    // clears with one restrained fade, without adding any new interface.
+    requestAnimationFrame(function() {
+      requestAnimationFrame(function() {
+        element.style.transition = "opacity 430ms ease";
+        element.style.opacity = "0";
+
+        hideTimer = setTimeout(function() {
+          element.style.display = "none";
+          element.style.transition = "none";
+          hideTimer = null;
+        }, 470);
+      });
+    });
+  }
+
+  window.playPagmarScreenTransition = playPagmarScreenTransition;
+})();
+
 // The English intro screen has been removed: the piece now opens
 // directly on the letter field.
 let screenMode = "game";
@@ -4096,22 +4154,18 @@ function drawGridHintLetter(alphaVal) {
   let cells = getActiveGridHintCells();
   if (!cells || cells.length === 0) return;
 
-  // The first stored cell is the RTL starting letter of both overlaid words.
+  // The second hint changes only the letter itself: it slowly lifts,
+  // enlarges and returns. No circle or additional symbol is introduced.
   let cell = cells[0];
   let point = cellToVisualPoint(cell.row, cell.col);
-  let pulse = 0.5 + 0.5 * Math.sin(millis() * 0.003);
-  let radius = max(5.2, min(stepX, stepY) * 0.66);
+  let wave = 0.5 + 0.5 * Math.sin(millis() * 0.0032);
+  let lift = Math.sin(millis() * 0.0032) * 1.6;
+  let sizePulse = 1.08 + wave * 0.15;
+  let hintAlpha = alphaVal * lerp(0.62, 1, wave);
 
   push();
-  noFill();
-  stroke(17, alphaVal * lerp(0.46, 0.92, pulse));
-  strokeWeight(0.72);
-  drawingContext.setLineDash([2.5, 2.2]);
-  circle(point.x, point.y, radius * 2);
-  drawingContext.setLineDash([]);
-
-  translate(point.x, point.y);
-  scale(1 + pulse * 0.06);
+  translate(point.x, point.y + lift);
+  scale(sizePulse);
 
   let arabicLetter = getArabicGridLetter(cell.row, cell.col);
   let hebrewLetter = getHebrewGridLetter(cell.row, cell.col);
@@ -4124,7 +4178,7 @@ function drawGridHintLetter(alphaVal) {
       -0.34,
       -0.18,
       redColor,
-      alphaVal * ARABIC_GRID_ALPHA_MULTIPLIER
+      hintAlpha * ARABIC_GRID_ALPHA_MULTIPLIER
     );
   }
 
@@ -4136,7 +4190,7 @@ function drawGridHintLetter(alphaVal) {
       0.34,
       0.18,
       blueColor,
-      alphaVal
+      hintAlpha
     );
   }
 
@@ -4655,6 +4709,12 @@ function navigateToFoundPair(pair) {
 
   // Close the currently open view before moving to another found word.
   returnToMainGridFromNavigation();
+
+  let transitionWord = hebrew || arabic;
+  if (isBorderWord(hebrew) || isBorderWord(arabic)) {
+    transitionWord = isBorderWord(hebrew) ? hebrew : arabic;
+  }
+  preparePagmarWordScreen(transitionWord);
 
   if (isMemoryWord(hebrew) || isMemoryWord(arabic)) {
     openMemoryPopup();
@@ -5309,6 +5369,39 @@ function getCellsVisualCenter(cells) {
   return createVector(sx / cells.length, sy / cells.length);
 }
 
+function preparePagmarWordScreen(word) {
+  let opensScreen =
+    isHomeWord(word) ||
+    isBorderWord(word) ||
+    isClothesWord(word) ||
+    isMemoryWord(word) ||
+    isIdentityWord(word) ||
+    isReflectionWord(word) ||
+    isBelongingWord(word) ||
+    isLandWord(word) ||
+    isBlurWord(word);
+
+  if (!opensScreen) return;
+
+  if (
+    isBorderWord(word) &&
+    typeof window !== "undefined" &&
+    window.PagmarAudio &&
+    typeof window.PagmarAudio.fadeOutIntroSound === "function"
+  ) {
+    window.PagmarAudio.fadeOutIntroSound(1000);
+  }
+
+  if (
+    typeof window !== "undefined" &&
+    typeof window.playPagmarScreenTransition === "function"
+  ) {
+    window.playPagmarScreenTransition(
+      isBorderWord(word) ? "#141414" : "#eeeeee"
+    );
+  }
+}
+
 function addFoundWord(cells, word) {
   if (alreadyFound(cells)) return;
 
@@ -5319,6 +5412,8 @@ function addFoundWord(cells, word) {
   });
 
   foundWords.push(new FoundWord(copiedCells, word, wordColor));
+
+  preparePagmarWordScreen(word);
 
   if (
     gridHintPair &&
@@ -8714,7 +8809,7 @@ window.hidePagmarSharedLens = hideSharedPagmarLens;
       '  -webkit-user-select: none;' +
       '  transition: opacity ' + BIRD_CONFIG.exitDurationMs + 'ms linear;' +
       '}' +
-      '#pagmar-bird-screen.is-leaving { opacity: 1; }' +
+      '#pagmar-bird-screen.is-leaving { opacity: 0; }' +
       '#pagmar-bird-screen canvas {' +
       '  display: block;' +
       '  width: 100%;' +
@@ -9820,10 +9915,8 @@ window.hidePagmarSharedLens = hideSharedPagmarLens;
   function requestBirdExit() {
     if (birdExitingAt >= 0) return;
 
-    if (window.PagmarAudio && typeof window.PagmarAudio.fadeOutIntroSound === "function") {
-      window.PagmarAudio.fadeOutIntroSound(BIRD_CONFIG.exitDurationMs);
-    }
-
+    // The project music continues across the grid and the word interfaces.
+    // It fades only when the BORDER word is found.
     birdExitingAt = birdNow();
     // Keep the bird fully opaque until a genuinely blank grid frame has been
     // rendered behind it. This prevents the completed grid from flashing.
