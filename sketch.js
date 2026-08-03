@@ -64,9 +64,13 @@ function getPagmarScreenType(role) {
   const CLICK_SOUND_FILE = "click.mp3";
   const INTRO_VOLUME = 0.58;
   const CLICK_VOLUME = 0.8;
+  const GRID_LETTER_VOLUME = 0.62;
+  const GRID_LETTER_AUDIO_POOL_SIZE = 10;
 
   let introAudio = null;
   let clickAudio = null;
+  let gridLetterAudioPool = [];
+  let gridLetterAudioIndex = 0;
   let introShouldPlay = true;
   let introFadeFrame = null;
 
@@ -179,6 +183,37 @@ function getPagmarScreenType(role) {
     } catch (error) {}
   }
 
+  function ensureGridLetterAudioPool() {
+    if (gridLetterAudioPool.length > 0) return gridLetterAudioPool;
+
+    for (let i = 0; i < GRID_LETTER_AUDIO_POOL_SIZE; i++) {
+      const audio = createAudio(CLICK_SOUND_FILE, false);
+      audio.volume = GRID_LETTER_VOLUME;
+      gridLetterAudioPool.push(audio);
+    }
+
+    return gridLetterAudioPool;
+  }
+
+  function playGridLetterSound() {
+    const pool = ensureGridLetterAudioPool();
+    if (pool.length === 0) return;
+
+    const audio = pool[gridLetterAudioIndex % pool.length];
+    gridLetterAudioIndex = (gridLetterAudioIndex + 1) % pool.length;
+
+    try {
+      audio.pause();
+      audio.currentTime = 0;
+      audio.volume = GRID_LETTER_VOLUME;
+
+      const playPromise = audio.play();
+      if (playPromise && typeof playPromise.catch === "function") {
+        playPromise.catch(function() {});
+      }
+    } catch (error) {}
+  }
+
   function retryIntroSoundFromGesture() {
     if (introShouldPlay) startIntroSound();
   }
@@ -199,7 +234,8 @@ function getPagmarScreenType(role) {
   window.PagmarAudio = {
     startIntroSound: startIntroSound,
     fadeOutIntroSound: fadeOutIntroSound,
-    playClickSound: playClickSound
+    playClickSound: playClickSound,
+    playGridLetterSound: playGridLetterSound
   };
 
   // Attempt autoplay for kiosk browsers configured to allow it. Standard
@@ -4992,6 +5028,33 @@ function isInsideBlurPopupClose(mx, my) {
   return dist(p.x, p.y, screenLeft + screenW - 18, screenTop + 14) < 10;
 }
 
+function playGridSelectionCellSounds(cellCount) {
+  if (
+    typeof window === "undefined" ||
+    !window.PagmarAudio ||
+    typeof window.PagmarAudio.playGridLetterSound !== "function"
+  ) {
+    return;
+  }
+
+  let safeCount = Math.max(0, Math.min(10, Math.floor(cellCount)));
+
+  for (let i = 0; i < safeCount; i++) {
+    if (i === 0) {
+      window.PagmarAudio.playGridLetterSound();
+    } else {
+      setTimeout(function() {
+        if (
+          window.PagmarAudio &&
+          typeof window.PagmarAudio.playGridLetterSound === "function"
+        ) {
+          window.PagmarAudio.playGridLetterSound();
+        }
+      }, i * 34);
+    }
+  }
+}
+
 function addCellUnderMouse() {
   let p = screenToDesign(mouseX, mouseY);
   let nearestCell = null;
@@ -5013,14 +5076,36 @@ function addCellUnderMouse() {
 
   if (currentSelection.length === 0) {
     currentSelection.push(nearestCell);
+    playGridSelectionCellSounds(1);
     return;
   }
 
   let first = currentSelection[0];
+  let previousEnd = currentSelection[currentSelection.length - 1];
+
+  // Staying over the same cell must not repeat the sound.
+  if (
+    previousEnd &&
+    previousEnd.row === nearestCell.row &&
+    previousEnd.col === nearestCell.col
+  ) {
+    return;
+  }
+
+  let newlyCrossedCells = previousEnd
+    ? Math.abs(nearestCell.col - previousEnd.col)
+    : 1;
 
   // Either horizontal direction is fine — checkSelection() already matches
   // both the forward and reversed reading of the selection.
-  currentSelection = getCellsBetween(first.row, first.col, first.row, nearestCell.col);
+  currentSelection = getCellsBetween(
+    first.row,
+    first.col,
+    first.row,
+    nearestCell.col
+  );
+
+  playGridSelectionCellSounds(Math.max(1, newlyCrossedCells));
 }
 
 function getNearestVisualCell(px, py, useTouchRadius) {
@@ -8825,7 +8910,9 @@ window.hidePagmarSharedLens = hideSharedPagmarLens;
       birdPointer.x >= promptStartX
     ) {
       birdPointer.promptDrag = true;
-      birdPointer.dragStartX = prompt.x + prompt.width;
+      // Begin from the exact touch position. A tap alone therefore has zero
+      // progress and cannot make the gesture animation appear.
+      birdPointer.dragStartX = birdPointer.x;
       birdPointer.dragCurrentX = birdPointer.x;
       setBirdPlaybackRate(1);
     } else {
@@ -9392,10 +9479,9 @@ window.hidePagmarSharedLens = hideSharedPagmarLens;
     if (!birdPointer.promptDrag) return 0;
 
     var prompt = getPromptHitRect();
-    var right = prompt.x + prompt.width;
 
     return clampBird(
-      (right - birdPointer.dragCurrentX) / prompt.width,
+      (birdPointer.dragStartX - birdPointer.dragCurrentX) / prompt.width,
       0,
       1
     );
@@ -9669,6 +9755,11 @@ window.hidePagmarSharedLens = hideSharedPagmarLens;
     if (!isBirdPromptReady(now) || !birdPointer.promptDrag) return;
 
     var progress = getPromptDragProgress();
+
+    // A simple press on "swipe to start" remains visually quiet. The real
+    // capsule appears only after the visitor has begun sliding left.
+    if (progress < 0.018) return;
+
     var prompt = getPromptHitRect();
     var lineWeight = Math.max(0.9, BIRD_CONFIG.promptFontSize * 0.028);
     var dashLength = Math.max(7, BIRD_CONFIG.promptFontSize * 0.33);
