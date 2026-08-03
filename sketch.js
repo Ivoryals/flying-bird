@@ -320,6 +320,7 @@ let introAutoTransitionDelay = 3000;
 let gridRevealStartTime = -1;
 let gridRevealDuration = 3000;
 let gridLetterFadeDuration = 520;
+let gridReturnRevealActive = false;
 
 let designW = 560;
 let designH = 260;
@@ -1241,6 +1242,23 @@ function beginGridReveal() {
   }
 }
 
+function isGridRevealAnimationComplete() {
+  if (gridRevealStartTime < 0) return true;
+
+  return (
+    millis() - gridRevealStartTime >=
+    gridRevealDuration + gridLetterFadeDuration
+  );
+}
+
+function restartGridEntryAnimation() {
+  // Match the original bird-to-grid reveal: begin from a blank grid, then
+  // reveal the scattered letters. Found-word circles return only afterward.
+  gridRevealStartTime = millis() + 140;
+  gridReturnRevealActive = true;
+  currentSelection = [];
+}
+
 function updateGridAnimation() {
   if (!animatingGridChange) return;
 
@@ -1661,8 +1679,17 @@ function drawGameGrid(alphaVal) {
         }
       }
 
-      drawFoundWordCircles(alphaVal);
-      drawGridHintLetter(alphaVal);
+      let returnRevealFinished =
+        !gridReturnRevealActive || isGridRevealAnimationComplete();
+
+      if (returnRevealFinished) {
+        if (gridReturnRevealActive) {
+          gridReturnRevealActive = false;
+        }
+
+        drawFoundWordCircles(alphaVal);
+        drawGridHintLetter(alphaVal);
+      }
     }
   }
 
@@ -4739,7 +4766,7 @@ function navigateToFoundPair(pair) {
   let arabic = pair.arabic;
 
   // Close the currently open view before moving to another found word.
-  returnToMainGridFromNavigation();
+  returnToMainGridFromNavigation(false);
 
   let transitionWord = hebrew || arabic;
   if (isBorderWord(hebrew) || isBorderWord(arabic)) {
@@ -4796,7 +4823,7 @@ function returnToFlyingBirdScreenFromNavigation() {
   window.location.reload();
 }
 
-function returnToMainGridFromNavigation() {
+function returnToMainGridFromNavigation(replayEntryAnimation = true) {
   if (animatingGridChange) {
     finishGridAnimation();
   }
@@ -4817,6 +4844,10 @@ function returnToMainGridFromNavigation() {
   clothesPopupOpen = false;
   blurPopupOpen = false;
   currentSelection = [];
+
+  if (replayEntryAnimation) {
+    restartGridEntryAnimation();
+  }
 }
 
 function drawTargetWordLabels(alphaVal) {
