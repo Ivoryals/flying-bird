@@ -536,6 +536,8 @@ let memoryCanvasElement;
 // Keep curtainholder.svg beside sketch.js.
 let memoryCurtainHolderSvg = null;
 let memoryCurtainHolderReady = false;
+let memoryCurtainHolderRedCanvas = null;
+let memoryCurtainHolderBlueCanvas = null;
 
 // Native browser microphone state.
 // This does not depend on p5.sound or p5.AudioIn.
@@ -6949,44 +6951,12 @@ function createMemorySystem() {
   }
 }
 
-function drawMemoryWeightedText(g, textValue, x, y, fillValue) {
-  g.fill(fillValue);
-
-  let passes = [
-    [0, 0],
-    [0.42, 0],
-    [-0.42, 0],
-    [0, 0.22],
-    [0, -0.12]
-  ];
-
-  for (let pass of passes) {
-    g.text(textValue, x + pass[0], y + pass[1]);
-  }
-}
-
-function drawMemoryWeightedCanvasText(ctx, textValue, x, y, fillValue) {
-  ctx.fillStyle = fillValue;
-
-  let passes = [
-    [0, 0],
-    [0.46, 0],
-    [-0.46, 0],
-    [0, 0.22],
-    [0, -0.12]
-  ];
-
-  for (let pass of passes) {
-    ctx.fillText(textValue, x + pass[0], y + pass[1]);
-  }
-}
-
 function createMemoryCharCanvases() {
   memoryCharCanvases = {};
   memoryCellCanvases = {};
 
-  let hebrewFontSize = Math.max(7.4, memoryConfig.baseCellHeight * 1.38);
-  let arabicFontSize = hebrewFontSize * (MEMORY_ARABIC_FONT_SCALE + 0.03);
+  let hebrewFontSize = Math.max(7, memoryConfig.baseCellHeight * 1.3);
+  let arabicFontSize = hebrewFontSize * MEMORY_ARABIC_FONT_SCALE;
   let uniqueHebrewChars = new Set();
 
   // Hebrew is rendered as cyan single-character cells.
@@ -7005,19 +6975,16 @@ function createMemoryCharCanvases() {
     g.pixelDensity(getSharpRenderDensity());
     g.clear();
     g.textFont(mainFont);
+    g.textStyle(BOLD);
     g.textSize(hebrewFontSize);
     g.textAlign(CENTER, CENTER);
     g.noStroke();
+    g.fill(MEMORY_HEBREW_COLOR);
+
     g.drawingContext.direction = "rtl";
     g.drawingContext.textRendering = "geometricPrecision";
 
-    drawMemoryWeightedText(
-      g,
-      ch,
-      size / 2,
-      size / 2 + hebrewFontSize * 0.04,
-      MEMORY_HEBREW_COLOR
-    );
+    g.text(ch, size / 2, size / 2 + hebrewFontSize * 0.04);
 
     memoryCharCanvases[ch] = g;
   }
@@ -7093,6 +7060,7 @@ function createMemoryArabicWordSlices(word, rowIndex, logicalStart, cellCount, f
   fullWord.pixelDensity(getSharpRenderDensity());
   fullWord.clear();
   fullWord.textFont(mainFont);
+  fullWord.textStyle(BOLD);
   fullWord.textSize(fontSize);
   fullWord.textAlign(CENTER, CENTER);
   fullWord.noStroke();
@@ -7103,7 +7071,7 @@ function createMemoryArabicWordSlices(word, rowIndex, logicalStart, cellCount, f
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.textRendering = "geometricPrecision";
-  ctx.font = fontSize + "px 'SimplerPro_HLAR_Mono', monospace";
+  ctx.font = "bold " + fontSize + "px 'SimplerPro_HLAR_Mono', monospace";
 
   let stretchedWord = expandMemoryArabicWordWithKashida(
     word,
@@ -7111,13 +7079,8 @@ function createMemoryArabicWordSlices(word, rowIndex, logicalStart, cellCount, f
     ctx
   );
 
-  drawMemoryWeightedCanvasText(
-    ctx,
-    forceRTL(stretchedWord),
-    fullW / 2,
-    fullH / 2 + fontSize * 0.04,
-    MEMORY_ARABIC_COLOR
-  );
+  ctx.fillStyle = MEMORY_ARABIC_COLOR;
+  ctx.fillText(forceRTL(stretchedWord), fullW / 2, fullH / 2 + fontSize * 0.04);
 
   let sliceW = Math.ceil(cellW + overlap * 2);
 
@@ -7236,12 +7199,43 @@ function applyMemoryBlowForce(delta) {
 // Shared center offset for the memory cloth simulation: centers it within
 // the grid region (left of the sidebar divider, below the header) instead
 // of the full window, so the header/divider/sidebar stay visible around it.
+function buildMemoryCurtainHolderTintCaches() {
+  if (
+    typeof document === "undefined" ||
+    !memoryCurtainHolderSvg ||
+    memoryCurtainHolderSvg.naturalWidth <= 0 ||
+    memoryCurtainHolderSvg.naturalHeight <= 0
+  ) {
+    return;
+  }
+
+  function createTintedCanvas(fillStyle) {
+    let tintCanvas = document.createElement("canvas");
+    tintCanvas.width = memoryCurtainHolderSvg.naturalWidth;
+    tintCanvas.height = memoryCurtainHolderSvg.naturalHeight;
+
+    let ctx = tintCanvas.getContext("2d");
+    ctx.clearRect(0, 0, tintCanvas.width, tintCanvas.height);
+    ctx.drawImage(memoryCurtainHolderSvg, 0, 0);
+
+    ctx.globalCompositeOperation = "source-in";
+    ctx.fillStyle = fillStyle;
+    ctx.fillRect(0, 0, tintCanvas.width, tintCanvas.height);
+
+    return tintCanvas;
+  }
+
+  memoryCurtainHolderBlueCanvas = createTintedCanvas("#2ef5ff");
+  memoryCurtainHolderRedCanvas = createTintedCanvas("#ff3535");
+}
+
 function loadMemoryCurtainHolderSvg() {
   if (typeof window === "undefined") return;
 
   memoryCurtainHolderSvg = new Image();
   memoryCurtainHolderSvg.onload = function() {
     memoryCurtainHolderReady = true;
+    buildMemoryCurtainHolderTintCaches();
 
     if (memorySystemReady) {
       configureMemoryGrid();
@@ -7308,37 +7302,42 @@ function drawMemoryCurtainHolder() {
   if (!memoryCurtainHolderReady || !memoryCurtainHolderSvg) return;
 
   let layout = getMemoryCurtainLayout();
-  let dx = Math.max(1.8, layout.holderW * 0.0024);
-  let dy = Math.max(0.9, layout.holderH * 0.0055);
 
   push();
   resetMatrix();
-  imageMode(CORNER);
-
   drawingContext.save();
-  drawingContext.globalCompositeOperation = "multiply";
   drawingContext.globalAlpha = 1;
   drawingContext.imageSmoothingEnabled = true;
 
-  tint(red(redColor), green(redColor), blue(redColor), 238);
-  image(
-    memoryCurtainHolderSvg,
-    layout.holderX - dx,
-    layout.holderY - dy,
-    layout.holderW,
-    layout.holderH
-  );
+  if (memoryCurtainHolderBlueCanvas && memoryCurtainHolderRedCanvas) {
+    drawingContext.globalCompositeOperation = "source-over";
+    drawingContext.drawImage(
+      memoryCurtainHolderBlueCanvas,
+      layout.holderX - 2.2,
+      layout.holderY + 1.2,
+      layout.holderW,
+      layout.holderH
+    );
 
-  tint(red(blueColor), green(blueColor), blue(blueColor), 238);
-  image(
-    memoryCurtainHolderSvg,
-    layout.holderX + dx,
-    layout.holderY + dy,
-    layout.holderW,
-    layout.holderH
-  );
+    drawingContext.globalCompositeOperation = "multiply";
+    drawingContext.drawImage(
+      memoryCurtainHolderRedCanvas,
+      layout.holderX + 2.2,
+      layout.holderY - 1.2,
+      layout.holderW,
+      layout.holderH
+    );
+  } else {
+    drawingContext.globalCompositeOperation = "source-over";
+    drawingContext.drawImage(
+      memoryCurtainHolderSvg,
+      layout.holderX,
+      layout.holderY,
+      layout.holderW,
+      layout.holderH
+    );
+  }
 
-  noTint();
   drawingContext.restore();
   pop();
 }
@@ -7360,7 +7359,7 @@ function drawMemoryCode() {
   drawingContext.imageSmoothingEnabled = true;
   drawingContext.save();
   drawingContext.globalCompositeOperation = "multiply";
-  drawingContext.globalAlpha = 0.58;
+  drawingContext.globalAlpha = 0.84;
 
   for (let p of memoryParticles) {
     let hebrewImg =
