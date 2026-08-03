@@ -415,9 +415,10 @@ let nextFoundWords = [];
 let languageMorphGrid = [];
 let languageMorphFinalStarted = false;
 let languageMorphFinalStartTime = 0;
+let languageRearrangeCompleted = false;
 
 const LANGUAGE_MORPH_CHANGE_DURATION = 3600;
-const LANGUAGE_MORPH_FINAL_DURATION = 900;
+const LANGUAGE_MORPH_FINAL_DURATION = 520;
 const LANGUAGE_MORPH_MIN_CHANGE_INTERVAL = 150;
 const LANGUAGE_MORPH_MAX_CHANGE_INTERVAL = 450;
 const LANGUAGE_MORPH_MIN_FADE_DURATION = 100;
@@ -1252,6 +1253,7 @@ function updateGridAnimation() {
     if (elapsed >= LANGUAGE_MORPH_CHANGE_DURATION) {
       languageMorphFinalStarted = true;
       languageMorphFinalStartTime = now;
+      prepareLanguageMorphFinalGrid(now);
     }
 
     return;
@@ -1263,7 +1265,7 @@ function updateGridAnimation() {
 }
 
 function triggerLanguageRearrange() {
-  if (animatingGridChange) return;
+  if (animatingGridChange || languageRearrangeCompleted) return;
 
   let savedFoundWords = foundWords.map(function(fw) {
     return {
@@ -1391,6 +1393,57 @@ function updateLanguageMorphLetterState(state, letterArray, now) {
   }
 }
 
+function getLanguageMorphVisibleLetter(state, now) {
+  if (!state) return "";
+
+  if (!state.transitioning) {
+    return state.currentLetter;
+  }
+
+  let progress = constrain(
+    (now - state.transitionStart) / max(1, state.transitionDuration),
+    0,
+    1
+  );
+
+  return progress < 0.5 ? state.currentLetter : state.nextLetter;
+}
+
+function prepareLanguageMorphFinalLetter(state, finalLetter, now) {
+  if (!state) return;
+
+  let visibleLetter = getLanguageMorphVisibleLetter(state, now);
+  let destinationLetter = finalLetter || visibleLetter;
+
+  state.currentLetter = visibleLetter;
+  state.nextLetter = destinationLetter;
+  state.transitionStart = now;
+  state.transitionDuration = LANGUAGE_MORPH_FINAL_DURATION;
+  state.waiting = false;
+  state.transitioning = visibleLetter !== destinationLetter;
+}
+
+function prepareLanguageMorphFinalGrid(now) {
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      let cell = languageMorphGrid[r] && languageMorphGrid[r][c];
+      if (!cell) continue;
+
+      prepareLanguageMorphFinalLetter(
+        cell.hebrew,
+        nextHebrewGridRows[r] && nextHebrewGridRows[r][c],
+        now
+      );
+
+      prepareLanguageMorphFinalLetter(
+        cell.arabic,
+        nextArabicGridRows[r] && nextArabicGridRows[r][c],
+        now
+      );
+    }
+  }
+}
+
 function getDifferentLanguageMorphLetter(letterArray, currentLetter) {
   let nextLetter = random(letterArray);
   let attempts = 0;
@@ -1421,20 +1474,11 @@ function finishGridAnimation() {
   animatingGridChange = false;
   languageMorphFinalStarted = false;
   languageMorphFinalStartTime = 0;
+  languageRearrangeCompleted = true;
 }
 
 function drawLanguageRearrangeAnimation(alphaVal) {
   const now = millis();
-  let finalProgress = 0;
-
-  if (languageMorphFinalStarted) {
-    const raw = constrain(
-      (now - languageMorphFinalStartTime) / LANGUAGE_MORPH_FINAL_DURATION,
-      0,
-      1
-    );
-    finalProgress = raw * raw * (3 - 2 * raw);
-  }
 
   push();
   textAlign(CENTER, CENTER);
@@ -1454,7 +1498,7 @@ function drawLanguageRearrangeAnimation(alphaVal) {
       const cell = languageMorphGrid[r] && languageMorphGrid[r][c];
       if (!cell) continue;
 
-      const coloredAlpha = alphaVal * (1 - finalProgress);
+      const coloredAlpha = alphaVal;
 
       // Arabic is rendered first. Hebrew is always the upper layer.
       drawLanguageMorphChangingLetter(
@@ -1475,19 +1519,6 @@ function drawLanguageRearrangeAnimation(alphaVal) {
         now
       );
 
-      // During the final copied transition, the new overlaid Hebrew/Arabic
-      // grids fade in while the morph layers fade away.
-      if (finalProgress > 0) {
-        const finalAlpha = alphaVal * finalProgress;
-        if (nextArabicGridRows[r] && nextArabicGridRows[r][c]) {
-          fill(red(redColor), green(redColor), blue(redColor), finalAlpha * ARABIC_GRID_ALPHA_MULTIPLIER);
-          text(nextArabicGridRows[r][c], visualPoint.x - 0.34, visualPoint.y - 0.18);
-        }
-        if (nextHebrewGridRows[r] && nextHebrewGridRows[r][c]) {
-          fill(red(blueColor), green(blueColor), blue(blueColor), finalAlpha);
-          text(nextHebrewGridRows[r][c], visualPoint.x + 0.34, visualPoint.y + 0.18);
-        }
-      }
     }
   }
 
@@ -4766,6 +4797,10 @@ function returnToFlyingBirdScreenFromNavigation() {
 }
 
 function returnToMainGridFromNavigation() {
+  if (animatingGridChange) {
+    finishGridAnimation();
+  }
+
   screenMode = "game";
   transition = 1;
   transitionStarted = true;
