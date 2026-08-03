@@ -536,8 +536,6 @@ let memoryCanvasElement;
 // Keep curtainholder.svg beside sketch.js.
 let memoryCurtainHolderSvg = null;
 let memoryCurtainHolderReady = false;
-let memoryCurtainHolderRedCanvas = null;
-let memoryCurtainHolderBlueCanvas = null;
 
 // Native browser microphone state.
 // This does not depend on p5.sound or p5.AudioIn.
@@ -7199,43 +7197,12 @@ function applyMemoryBlowForce(delta) {
 // Shared center offset for the memory cloth simulation: centers it within
 // the grid region (left of the sidebar divider, below the header) instead
 // of the full window, so the header/divider/sidebar stay visible around it.
-function buildMemoryCurtainHolderTintCaches() {
-  if (
-    typeof document === "undefined" ||
-    !memoryCurtainHolderSvg ||
-    memoryCurtainHolderSvg.naturalWidth <= 0 ||
-    memoryCurtainHolderSvg.naturalHeight <= 0
-  ) {
-    return;
-  }
-
-  function createTintedCanvas(fillStyle) {
-    let tintCanvas = document.createElement("canvas");
-    tintCanvas.width = memoryCurtainHolderSvg.naturalWidth;
-    tintCanvas.height = memoryCurtainHolderSvg.naturalHeight;
-
-    let ctx = tintCanvas.getContext("2d");
-    ctx.clearRect(0, 0, tintCanvas.width, tintCanvas.height);
-    ctx.drawImage(memoryCurtainHolderSvg, 0, 0);
-
-    ctx.globalCompositeOperation = "source-in";
-    ctx.fillStyle = fillStyle;
-    ctx.fillRect(0, 0, tintCanvas.width, tintCanvas.height);
-
-    return tintCanvas;
-  }
-
-  memoryCurtainHolderBlueCanvas = createTintedCanvas("#2ef5ff");
-  memoryCurtainHolderRedCanvas = createTintedCanvas("#ff3535");
-}
-
 function loadMemoryCurtainHolderSvg() {
   if (typeof window === "undefined") return;
 
   memoryCurtainHolderSvg = new Image();
   memoryCurtainHolderSvg.onload = function() {
     memoryCurtainHolderReady = true;
-    buildMemoryCurtainHolderTintCaches();
 
     if (memorySystemReady) {
       configureMemoryGrid();
@@ -7306,38 +7273,16 @@ function drawMemoryCurtainHolder() {
   push();
   resetMatrix();
   drawingContext.save();
+  drawingContext.globalCompositeOperation = "source-over";
   drawingContext.globalAlpha = 1;
   drawingContext.imageSmoothingEnabled = true;
-
-  if (memoryCurtainHolderBlueCanvas && memoryCurtainHolderRedCanvas) {
-    drawingContext.globalCompositeOperation = "source-over";
-    drawingContext.drawImage(
-      memoryCurtainHolderBlueCanvas,
-      layout.holderX - 2.2,
-      layout.holderY + 1.2,
-      layout.holderW,
-      layout.holderH
-    );
-
-    drawingContext.globalCompositeOperation = "multiply";
-    drawingContext.drawImage(
-      memoryCurtainHolderRedCanvas,
-      layout.holderX + 2.2,
-      layout.holderY - 1.2,
-      layout.holderW,
-      layout.holderH
-    );
-  } else {
-    drawingContext.globalCompositeOperation = "source-over";
-    drawingContext.drawImage(
-      memoryCurtainHolderSvg,
-      layout.holderX,
-      layout.holderY,
-      layout.holderW,
-      layout.holderH
-    );
-  }
-
+  drawingContext.drawImage(
+    memoryCurtainHolderSvg,
+    layout.holderX,
+    layout.holderY,
+    layout.holderW,
+    layout.holderH
+  );
   drawingContext.restore();
   pop();
 }
@@ -7359,7 +7304,7 @@ function drawMemoryCode() {
   drawingContext.imageSmoothingEnabled = true;
   drawingContext.save();
   drawingContext.globalCompositeOperation = "multiply";
-  drawingContext.globalAlpha = 0.84;
+  drawingContext.globalAlpha = 0.58;
 
   for (let p of memoryParticles) {
     let hebrewImg =
@@ -8728,10 +8673,11 @@ window.hidePagmarSharedLens = hideSharedPagmarLens;
     promptDemoTouchFadeMs: 320,
     promptDemoReturnDelayMs: 3000,
 
-    // The prompt is RTL, so the user must begin near its right edge and
-    // slide almost all the way to its left edge before the field opens.
-    promptStartZoneRatio: 0.24,
-    promptCompletionRatio: 0.91,
+    // The prompt is RTL. The touch-start zone extends beyond the visible
+    // sentence on the right so exhibition visitors can begin more naturally.
+    promptStartZoneRatio: 0.42,
+    promptStartExtraRight: 72,
+    promptCompletionRatio: 0.76,
 
     exitDurationMs: 680,
     idleResetMs: 90000
@@ -8899,14 +8845,17 @@ window.hidePagmarSharedLens = hideSharedPagmarLens;
       '  -webkit-tap-highlight-color: transparent;' +
       '  user-select: none;' +
       '  -webkit-user-select: none;' +
-      '  transition: opacity ' + BIRD_CONFIG.exitDurationMs + 'ms linear;' +
+      '  transition: none;' +
       '}' +
-      '#pagmar-bird-screen.is-leaving { opacity: 0; }' +
+      '#pagmar-bird-screen.is-leaving { opacity: 1; }' +
       '#pagmar-bird-screen canvas {' +
       '  display: block;' +
       '  width: 100%;' +
       '  height: 100%;' +
+      '  opacity: 1;' +
+      '  transition: opacity ' + BIRD_CONFIG.exitDurationMs + 'ms ease;' +
       '}' +
+      '#pagmar-bird-screen.is-leaving canvas { opacity: 0; }' +
       '#pagmar-bird-screen video {' +
       '  position: absolute;' +
       '  left: -20px;' +
@@ -9084,17 +9033,14 @@ window.hidePagmarSharedLens = hideSharedPagmarLens;
       interruptPromptDemo(birdLastInteractionAt);
     }
 
-    var promptStartX =
-      prompt.x + prompt.width * (1 - BIRD_CONFIG.promptStartZoneRatio);
+    var promptStartRect = getPromptStartHitRect();
 
     // The first touch only reveals the typewriter text. Once the prompt has
-    // finished typing, entry can begin only from the sentence's RTL start
-    // zone at the right edge.
+    // finished typing, entry can begin from the widened RTL start zone.
     if (
       !textWasHidden &&
       promptReady &&
-      pointInsideRect(birdPointer.x, birdPointer.y, prompt) &&
-      birdPointer.x >= promptStartX
+      pointInsideRect(birdPointer.x, birdPointer.y, promptStartRect)
     ) {
       birdPointer.promptDrag = true;
       // Begin from the exact touch position. A tap alone therefore has zero
@@ -9123,7 +9069,7 @@ window.hidePagmarSharedLens = hideSharedPagmarLens;
       birdPointer.dragCurrentX = clampBird(
         birdPointer.x,
         prompt.x,
-        prompt.x + prompt.width
+        Math.max(prompt.x + prompt.width, birdPointer.dragStartX)
       );
 
       // RTL sentence: progress begins on the right and increases only while
@@ -9666,9 +9612,13 @@ window.hidePagmarSharedLens = hideSharedPagmarLens;
     if (!birdPointer.promptDrag) return 0;
 
     var prompt = getPromptHitRect();
+    var availableDistance = Math.max(
+      BIRD_CONFIG.promptFontSize * 4,
+      birdPointer.dragStartX - prompt.x
+    );
 
     return clampBird(
-      (birdPointer.dragStartX - birdPointer.dragCurrentX) / prompt.width,
+      (birdPointer.dragStartX - birdPointer.dragCurrentX) / availableDistance,
       0,
       1
     );
@@ -9786,6 +9736,18 @@ window.hidePagmarSharedLens = hideSharedPagmarLens;
       y: layout.top - verticalPadding,
       width: layout.totalWidth + sidePadding * 2,
       height: layout.bottom - layout.top + verticalPadding * 2
+    };
+  }
+
+  function getPromptStartHitRect() {
+    var prompt = getPromptHitRect();
+    var startWidth = prompt.width * BIRD_CONFIG.promptStartZoneRatio;
+
+    return {
+      x: prompt.x + prompt.width - startWidth,
+      y: prompt.y - 8,
+      width: startWidth + BIRD_CONFIG.promptStartExtraRight,
+      height: prompt.height + 16
     };
   }
 
