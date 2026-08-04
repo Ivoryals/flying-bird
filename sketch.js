@@ -305,6 +305,435 @@ function getPagmarScreenType(role) {
   window.playPagmarScreenTransition = playPagmarScreenTransition;
 })();
 
+// ---- Shared interaction guidance -------------------------------------------
+let pagmarInteractionGuide = null;
+let pagmarInteractionGuideMode = "";
+let gridInteractionGuideDismissed = false;
+let borderInteractionGuideDismissed = false;
+let memoryInteractionGuideDismissed = false;
+let belongingInteractionGuideDismissed = false;
+let reflectionInteractionGuideDismissed = false;
+
+const PAGMAR_GUIDE_INACTIVITY_MS = 3000;
+let borderInteractionGuideLastActivityAt = -Infinity;
+let memoryInteractionGuideLastActivityAt = -Infinity;
+let belongingInteractionGuideLastActivityAt = -Infinity;
+let reflectionInteractionGuideLastActivityAt = -Infinity;
+let homeInteractionGuideRestartTimer = null;
+let homeInteractionGuideActivityHandler = null;
+
+function getPagmarGuideClock() {
+  if (typeof millis === "function") return millis();
+  if (typeof performance !== "undefined") return performance.now();
+  return Date.now();
+}
+
+function markPagmarInteractionGuideActivity(screenName) {
+  const now = getPagmarGuideClock();
+
+  if (screenName === "border") {
+    borderInteractionGuideDismissed = true;
+    borderInteractionGuideLastActivityAt = now;
+  } else if (screenName === "memory") {
+    memoryInteractionGuideDismissed = true;
+    memoryInteractionGuideLastActivityAt = now;
+  } else if (screenName === "belonging") {
+    belongingInteractionGuideDismissed = true;
+    belongingInteractionGuideLastActivityAt = now;
+  } else if (screenName === "reflection") {
+    reflectionInteractionGuideDismissed = true;
+    reflectionInteractionGuideLastActivityAt = now;
+  }
+
+  updatePagmarInteractionGuide();
+}
+
+function markActivePagmarWordScreenActivity(event) {
+  // Pointer movement only counts while the visitor is actively dragging.
+  if (
+    event &&
+    event.type === "pointermove" &&
+    typeof event.buttons === "number" &&
+    event.buttons === 0
+  ) {
+    return;
+  }
+
+  if (
+    typeof reflectionTicketOpen !== "undefined" &&
+    reflectionTicketOpen
+  ) {
+    markPagmarInteractionGuideActivity("reflection");
+    return;
+  }
+
+  if (borderPopupOpen) {
+    markPagmarInteractionGuideActivity("border");
+    return;
+  }
+
+  if (memoryPopupOpen) {
+    markPagmarInteractionGuideActivity("memory");
+    return;
+  }
+
+  if (belongingPopupOpen) {
+    markPagmarInteractionGuideActivity("belonging");
+    return;
+  }
+
+  if (
+    homePopupOpen &&
+    typeof homeInteractionGuideActivityHandler === "function"
+  ) {
+    homeInteractionGuideActivityHandler();
+  }
+}
+
+function restorePagmarInteractionGuideAfterInactivity() {
+  const now = getPagmarGuideClock();
+
+  if (
+    borderInteractionGuideDismissed &&
+    now - borderInteractionGuideLastActivityAt >=
+      PAGMAR_GUIDE_INACTIVITY_MS
+  ) {
+    borderInteractionGuideDismissed = false;
+  }
+
+  if (
+    memoryInteractionGuideDismissed &&
+    now - memoryInteractionGuideLastActivityAt >=
+      PAGMAR_GUIDE_INACTIVITY_MS
+  ) {
+    memoryInteractionGuideDismissed = false;
+  }
+
+  if (
+    belongingInteractionGuideDismissed &&
+    now - belongingInteractionGuideLastActivityAt >=
+      PAGMAR_GUIDE_INACTIVITY_MS
+  ) {
+    belongingInteractionGuideDismissed = false;
+  }
+
+  if (
+    reflectionInteractionGuideDismissed &&
+    now - reflectionInteractionGuideLastActivityAt >=
+      PAGMAR_GUIDE_INACTIVITY_MS
+  ) {
+    reflectionInteractionGuideDismissed = false;
+  }
+}
+
+function setupPagmarInteractionGuide() {
+  if (typeof document === "undefined" || pagmarInteractionGuide) return;
+
+  const style = document.createElement("style");
+  style.id = "pagmar-interaction-guide-style";
+  style.textContent = `
+    #pagmar-interaction-guide {
+      position: fixed;
+      left: 50%;
+      bottom: 74px;
+      z-index: 1000002;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;
+      opacity: 0;
+      transform: translate(-50%, 8px);
+      transition: opacity 220ms ease, transform 220ms ease;
+    }
+
+    #pagmar-interaction-guide.is-visible {
+      opacity: 1;
+      transform: translate(-50%, 0);
+    }
+
+    #pagmar-interaction-guide.is-dark {
+      color: #ffffff;
+    }
+
+    .pagmar-guide-icon {
+      position: relative;
+      width: 48px;
+      height: 24px;
+      opacity: .82;
+    }
+
+
+    .pagmar-guide-icon-scroll::before,
+    .pagmar-guide-icon-scroll::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      width: 13px;
+      height: 13px;
+      border-right: 1px solid currentColor;
+      border-bottom: 1px solid currentColor;
+      transform: translateX(-50%) rotate(45deg);
+      animation: pagmar-guide-scroll 1.35s ease-in-out infinite;
+    }
+
+    .pagmar-guide-icon-scroll::before {
+      top: -1px;
+    }
+
+    .pagmar-guide-icon-scroll::after {
+      top: 8px;
+      animation-delay: .13s;
+    }
+
+    /* Main grid: small letter marks with a selection capsule expanding
+       from right to left. This represents selecting a word, not a slider. */
+    .pagmar-guide-icon-drag {
+      width: 72px;
+      height: 26px;
+    }
+
+    .pagmar-guide-icon-drag::before {
+      content: "";
+      position: absolute;
+      left: 8px;
+      top: 9px;
+      width: 4px;
+      height: 8px;
+      border-radius: 2px;
+      background: currentColor;
+      opacity: .64;
+      box-shadow:
+        10px 0 0 currentColor,
+        20px 0 0 currentColor,
+        30px 0 0 currentColor,
+        40px 0 0 currentColor,
+        50px 0 0 currentColor;
+    }
+
+    .pagmar-guide-icon-drag::after {
+      content: "";
+      position: absolute;
+      right: 3px;
+      top: 3px;
+      width: 12px;
+      height: 18px;
+      border: 1px solid currentColor;
+      border-radius: 999px;
+      animation: pagmar-guide-word-select 1.7s ease-in-out infinite;
+    }
+
+    /* Reflection only: this remains a true slider animation. */
+    .pagmar-guide-icon-slider::before {
+      content: "";
+      position: absolute;
+      left: 4px;
+      right: 4px;
+      top: 50%;
+      height: 1px;
+      background: currentColor;
+      opacity: .58;
+    }
+
+    .pagmar-guide-icon-slider::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      left: 5px;
+      width: 8px;
+      height: 8px;
+      margin-top: -4px;
+      border-radius: 50%;
+      background: currentColor;
+      animation: pagmar-guide-horizontal 2.45s ease-in-out infinite;
+    }
+
+    /* Memory: two moving curved lines suggest air/wind, not sliding. */
+    .pagmar-guide-icon-breeze::before,
+    .pagmar-guide-icon-breeze::after {
+      content: "";
+      position: absolute;
+      left: 5px;
+      width: 38px;
+      height: 9px;
+      border-top: 1px solid currentColor;
+      border-radius: 50%;
+      animation: pagmar-guide-breeze 1.8s ease-in-out infinite;
+    }
+
+    .pagmar-guide-icon-breeze::before {
+      top: 5px;
+    }
+
+    .pagmar-guide-icon-breeze::after {
+      top: 14px;
+      animation-delay: .18s;
+    }
+
+    .pagmar-guide-icon-lens::before {
+      content: "";
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 18px;
+      height: 18px;
+      border: 1px solid currentColor;
+      border-radius: 50%;
+      transform: translate(-50%, -50%);
+      animation: pagmar-guide-lens 1.55s ease-in-out infinite;
+    }
+
+    .pagmar-guide-icon-lens::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 4px;
+      height: 4px;
+      border-radius: 50%;
+      background: currentColor;
+      transform: translate(-50%, -50%);
+    }
+
+    @keyframes pagmar-guide-scroll {
+      0%, 100% { opacity: .18; transform: translate(-50%, -3px) rotate(45deg); }
+      50% { opacity: 1; transform: translate(-50%, 4px) rotate(45deg); }
+    }
+
+    @keyframes pagmar-guide-word-select {
+      0%, 100% {
+        width: 12px;
+        opacity: .24;
+      }
+      55%, 76% {
+        width: 66px;
+        opacity: 1;
+      }
+    }
+
+    @keyframes pagmar-guide-horizontal {
+      0%, 100% { left: 5px; opacity: .3; }
+      50% { left: 35px; opacity: 1; }
+    }
+
+    @keyframes pagmar-guide-breeze {
+      0%, 100% {
+        transform: translateX(-5px) scaleX(.72);
+        opacity: .18;
+      }
+      50% {
+        transform: translateX(5px) scaleX(1);
+        opacity: 1;
+      }
+    }
+
+    @keyframes pagmar-guide-lens {
+      0%, 100% { transform: translate(-50%, -50%) scale(.84); opacity: .35; }
+      50% { transform: translate(-50%, -50%) scale(1.12); opacity: 1; }
+    }
+  `;
+  document.head.appendChild(style);
+
+  pagmarInteractionGuide = document.createElement("div");
+  pagmarInteractionGuide.id = "pagmar-interaction-guide";
+  pagmarInteractionGuide.setAttribute("aria-hidden", "true");
+  pagmarInteractionGuide.innerHTML = `
+    <div class="pagmar-guide-icon"></div>
+  `;
+  document.body.appendChild(pagmarInteractionGuide);
+
+  // Any real interaction inside an open word screen hides its cue
+  // immediately. Continued interaction resets the 3-second timer.
+  [
+    "pointerdown",
+    "pointermove",
+    "touchstart",
+    "touchmove",
+    "wheel",
+    "keydown"
+  ].forEach(function(eventName) {
+    document.addEventListener(
+      eventName,
+      markActivePagmarWordScreenActivity,
+      { capture: true, passive: true }
+    );
+  });
+}
+
+function showPagmarInteractionGuide(mode, dark) {
+  setupPagmarInteractionGuide();
+  if (!pagmarInteractionGuide) return;
+
+  const icon = pagmarInteractionGuide.querySelector(".pagmar-guide-icon");
+
+  if (pagmarInteractionGuideMode !== mode && icon) {
+    icon.className = "pagmar-guide-icon pagmar-guide-icon-" + mode;
+    pagmarInteractionGuideMode = mode;
+  }
+
+  pagmarInteractionGuide.style.bottom =
+    Math.round(getFooterHeight() + 15) + "px";
+  pagmarInteractionGuide.classList.toggle("is-dark", Boolean(dark));
+  pagmarInteractionGuide.classList.add("is-visible");
+  pagmarInteractionGuide.setAttribute("aria-hidden", "false");
+}
+
+function hidePagmarInteractionGuide() {
+  if (!pagmarInteractionGuide) return;
+  pagmarInteractionGuide.classList.remove("is-visible");
+  pagmarInteractionGuide.setAttribute("aria-hidden", "true");
+}
+
+function updatePagmarInteractionGuide() {
+  if (typeof document === "undefined") return;
+
+  restorePagmarInteractionGuideAfterInactivity();
+
+  const birdScreen = document.getElementById("pagmar-bird-screen");
+  if (birdScreen && birdScreen.style.display !== "none") {
+    hidePagmarInteractionGuide();
+    return;
+  }
+
+  if (reflectionTicketOpen) {
+    if (reflectionInteractionGuideDismissed) {
+      hidePagmarInteractionGuide();
+    } else {
+      showPagmarInteractionGuide("slider", false);
+    }
+    return;
+  }
+
+  if (borderPopupOpen) {
+    if (borderInteractionGuideDismissed) {
+      hidePagmarInteractionGuide();
+    } else {
+      showPagmarInteractionGuide("scroll", true);
+    }
+    return;
+  }
+
+  if (memoryPopupOpen) {
+    if (memoryInteractionGuideDismissed) {
+      hidePagmarInteractionGuide();
+    } else {
+      showPagmarInteractionGuide("breeze", false);
+    }
+    return;
+  }
+
+  if (belongingPopupOpen) {
+    if (belongingInteractionGuideDismissed) {
+      hidePagmarInteractionGuide();
+    } else {
+      showPagmarInteractionGuide("lens", false);
+    }
+    return;
+  }
+
+  hidePagmarInteractionGuide();
+}
+
 // The English intro screen has been removed: the piece now opens
 // directly on the letter field.
 let screenMode = "game";
@@ -322,8 +751,8 @@ let gridRevealDuration = 3000;
 let gridLetterFadeDuration = 520;
 let gridReturnRevealActive = false;
 
-let designW = 560;
-let designH = 260;
+let designW = 620;
+let designH = 235;
 
 // High-resolution backing canvas for crisp typography on the 24-inch screen.
 // The CSS size stays equal to the browser window; only the internal pixel
@@ -333,12 +762,12 @@ let scaleFactor = 1;
 let offsetX = 0;
 let offsetY = 0;
 
-let cols = 64;
-let rows = 20;
+let cols = 48;
+let rows = 16;
 let baseX = 0;
 let baseY = 0;
-let stepX = 7.45;
-let stepY = 9.35;
+let stepX = 12.1;
+let stepY = 12.0;
 
 // ---- Top bar (title / language toggle / found counter) ----
 let uiLanguage = "he"; // "he" or "ar"
@@ -414,12 +843,13 @@ let nextFoundWords = [];
 // This copies the smooth independent letter crossfades from the supplied
 // recording sketch, but runs inside the main responsive word-search grid.
 let languageMorphGrid = [];
+let languageMorphSettling = false;
 let languageMorphFinalStarted = false;
 let languageMorphFinalStartTime = 0;
 let languageRearrangeCompleted = false;
 
 const LANGUAGE_MORPH_CHANGE_DURATION = 3600;
-const LANGUAGE_MORPH_FINAL_DURATION = 520;
+const LANGUAGE_MORPH_FINAL_DURATION = 900;
 const LANGUAGE_MORPH_MIN_CHANGE_INTERVAL = 150;
 const LANGUAGE_MORPH_MAX_CHANGE_INTERVAL = 450;
 const LANGUAGE_MORPH_MIN_FADE_DURATION = 100;
@@ -437,6 +867,7 @@ let homeVideoDomVisible = false;
 let homeScreenRoot = null;
 let homeScreenStyle = null;
 let homeScreenVideos = [];
+let homeScreenScrollGuide = null;
 
 let homeVideoWindowX = null;
 let homeVideoWindowY = null;
@@ -465,6 +896,11 @@ let borderScreenTextPanel = null;
 let borderScreenAudio = null;
 let borderScreenImageRevealed = false;
 let borderScreenTextRevealed = false;
+let borderScreenBoard = null;
+let borderScreenTrailSvg = null;
+let borderTrailProgress = 0;
+let borderTrailTargetProgress = 0;
+let borderTrailAnimationFrame = null;
 
 // Points along the border constellation line. xFrac/yFrac are fractions of
 // screen width/height (0..1) so it scales to any window size.
@@ -570,6 +1006,18 @@ let belongingCyanImg = null;
 let belongingRedImg = null;
 let belongingPopupOpenStartedAt = -1;
 let belongingPopupOpenDuration = 680;
+
+// Horizontal gallery state for انتماء / שייכות.
+// The existing text and image become two full-screen horizontal panels.
+let belongingHorizontalOffset = 0;
+let belongingHorizontalTarget = 0;
+let belongingHorizontalMaxOffset = 0;
+let belongingHorizontalDragging = false;
+let belongingHorizontalDragStartX = 0;
+let belongingHorizontalDragStartOffset = 0;
+let belongingHorizontalLastPointerX = 0;
+let belongingHorizontalLastPointerTime = 0;
+let belongingHorizontalVelocity = 0;
 
 let landPopupOpen = false;
 let landVideo;
@@ -836,6 +1284,7 @@ function setup() {
   calculateLayout();
   setupIpadTouchSupport();
   setupSharedDraggableLens();
+  setupPagmarInteractionGuide();
 
   // The grid fades in on its own now that nothing precedes it.
   beginGridReveal();
@@ -863,6 +1312,7 @@ function setup() {
 function draw() {
   updateGridAnimation();
   updateIntroAutoTransition();
+  updatePagmarInteractionGuide();
 
   if (belongingPopupOpen) {
     drawBelongingScreen();
@@ -1266,12 +1716,21 @@ function updateGridAnimation() {
   const elapsed = now - gridAnimationStartTime;
 
   if (!languageMorphFinalStarted) {
-    updateLanguageMorphRandomLetters(now);
+    if (!languageMorphSettling) {
+      updateLanguageMorphRandomLetters(now);
 
-    if (elapsed >= LANGUAGE_MORPH_CHANGE_DURATION) {
-      languageMorphFinalStarted = true;
-      languageMorphFinalStartTime = now;
-      prepareLanguageMorphFinalGrid(now);
+      if (elapsed >= LANGUAGE_MORPH_CHANGE_DURATION) {
+        languageMorphSettling = true;
+        beginLanguageMorphSettling();
+      }
+    } else {
+      let settled = updateLanguageMorphSettling(now);
+
+      if (settled) {
+        languageMorphFinalStarted = true;
+        languageMorphFinalStartTime = now;
+        prepareLanguageMorphFinalGrid(now);
+      }
     }
 
     return;
@@ -1321,6 +1780,7 @@ function triggerLanguageRearrange() {
   currentSelection = [];
   animatingGridChange = true;
   gridAnimationStartTime = millis();
+  languageMorphSettling = false;
   languageMorphFinalStarted = false;
   languageMorphFinalStartTime = 0;
 }
@@ -1411,34 +1871,76 @@ function updateLanguageMorphLetterState(state, letterArray, now) {
   }
 }
 
-function getLanguageMorphVisibleLetter(state, now) {
-  if (!state) return "";
+function beginLanguageMorphSettling() {
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      let cell = languageMorphGrid[r] && languageMorphGrid[r][c];
+      if (!cell) continue;
 
-  if (!state.transitioning) {
-    return state.currentLetter;
+      freezeWaitingLanguageMorphState(cell.hebrew);
+      freezeWaitingLanguageMorphState(cell.arabic);
+    }
   }
-
-  let progress = constrain(
-    (now - state.transitionStart) / max(1, state.transitionDuration),
-    0,
-    1
-  );
-
-  return progress < 0.5 ? state.currentLetter : state.nextLetter;
 }
 
-function prepareLanguageMorphFinalLetter(state, finalLetter, now) {
+function freezeWaitingLanguageMorphState(state) {
   if (!state) return;
 
-  let visibleLetter = getLanguageMorphVisibleLetter(state, now);
-  let destinationLetter = finalLetter || visibleLetter;
+  // Waiting letters stop scheduling new changes. Letters already halfway
+  // through a shuffle finish that one change before the landing begins.
+  if (state.waiting && !state.transitioning) {
+    state.transitionStart = Infinity;
+  }
+}
 
-  state.currentLetter = visibleLetter;
-  state.nextLetter = destinationLetter;
-  state.transitionStart = now;
-  state.transitionDuration = LANGUAGE_MORPH_FINAL_DURATION;
-  state.waiting = false;
-  state.transitioning = visibleLetter !== destinationLetter;
+function updateLanguageMorphSettling(now) {
+  let allSettled = true;
+
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      let cell = languageMorphGrid[r] && languageMorphGrid[r][c];
+      if (!cell) continue;
+
+      if (!settleLanguageMorphState(cell.hebrew, now)) {
+        allSettled = false;
+      }
+
+      if (!settleLanguageMorphState(cell.arabic, now)) {
+        allSettled = false;
+      }
+    }
+  }
+
+  return allSettled;
+}
+
+function settleLanguageMorphState(state, now) {
+  if (!state || !state.transitioning) return true;
+
+  let endTime = state.transitionStart + state.transitionDuration;
+
+  if (now < endTime) return false;
+
+  state.currentLetter = state.nextLetter;
+  state.waiting = true;
+  state.transitioning = false;
+  state.transitionStart = Infinity;
+
+  return true;
+}
+
+function prepareLanguageMorphFinalLetter(state, finalLetter, now, row, col) {
+  if (!state) return;
+
+  state.finalizing = true;
+  state.finalOutgoingLetter = state.currentLetter;
+  state.finalLetter = finalLetter || state.currentLetter;
+
+  // A short deterministic stagger keeps the landing fluid without changing
+  // opacity or showing merged glyphs.
+  state.finalTransitionStart =
+    now + ((row * 11 + col * 7) % 10) * 20;
+  state.finalTransitionDuration = 690;
 }
 
 function prepareLanguageMorphFinalGrid(now) {
@@ -1450,13 +1952,17 @@ function prepareLanguageMorphFinalGrid(now) {
       prepareLanguageMorphFinalLetter(
         cell.hebrew,
         nextHebrewGridRows[r] && nextHebrewGridRows[r][c],
-        now
+        now,
+        r,
+        c
       );
 
       prepareLanguageMorphFinalLetter(
         cell.arabic,
         nextArabicGridRows[r] && nextArabicGridRows[r][c],
-        now
+        now,
+        r,
+        c
       );
     }
   }
@@ -1490,6 +1996,7 @@ function finishGridAnimation() {
 
   currentSelection = [];
   animatingGridChange = false;
+  languageMorphSettling = false;
   languageMorphFinalStarted = false;
   languageMorphFinalStartTime = 0;
   languageRearrangeCompleted = true;
@@ -1553,6 +2060,60 @@ function drawLanguageMorphChangingLetter(
   now
 ) {
   if (!state || alphaLimit <= 1) return;
+
+  if (state.finalizing) {
+    const rawFinalProgress = constrain(
+      (now - state.finalTransitionStart) /
+        max(1, state.finalTransitionDuration),
+      0,
+      1
+    );
+
+    if (state.finalOutgoingLetter === state.finalLetter) {
+      drawLanguageMorphLetter(
+        state.finalLetter,
+        x,
+        y,
+        letterColor,
+        alphaLimit
+      );
+      return;
+    }
+
+    const landingProgress = 1 - Math.pow(1 - rawFinalProgress, 3);
+    const travel = stepY * 0.96;
+
+    drawingContext.save();
+    drawingContext.beginPath();
+    drawingContext.rect(
+      x - stepX * 0.48,
+      y - stepY * 0.48,
+      stepX * 0.96,
+      stepY * 0.96
+    );
+    drawingContext.clip();
+
+    // Both letters stay at full opacity. The old one leaves upward while
+    // the final grid letter enters from below and lands exactly at y.
+    drawLanguageMorphLetter(
+      state.finalOutgoingLetter,
+      x,
+      y - travel * landingProgress,
+      letterColor,
+      alphaLimit
+    );
+
+    drawLanguageMorphLetter(
+      state.finalLetter,
+      x,
+      y + travel * (1 - landingProgress),
+      letterColor,
+      alphaLimit
+    );
+
+    drawingContext.restore();
+    return;
+  }
 
   if (state.waiting || !state.transitioning) {
     drawLanguageMorphLetter(
@@ -2006,12 +2567,27 @@ function setupHomeScreenDom() {
       z-index: 1;
     }
 
+    .pagmar-home-scroll-guide {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      margin-top: clamp(28px, 5vh, 58px);
+      opacity: 1;
+      transition: opacity 220ms ease;
+    }
+
+    .pagmar-home-scroll-guide.is-hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+
     .pagmar-home-scroll-arrow {
       position: relative;
       width: 34px;
       height: 34px;
       flex: 0 0 34px;
-      margin-top: clamp(28px, 5vh, 58px);
       cursor: pointer;
       opacity: 0.72;
       touch-action: manipulation;
@@ -2029,11 +2605,32 @@ function setupHomeScreenDom() {
       transform: translateX(-50%) rotate(45deg);
     }
 
-    .pagmar-home-scroll-arrow::before { top: 0; }
-    .pagmar-home-scroll-arrow::after { top: 9px; }
+    .pagmar-home-scroll-arrow::before {
+      top: 0;
+      animation: pagmar-home-scroll-invite 1.35s ease-in-out infinite;
+    }
+
+    .pagmar-home-scroll-arrow::after {
+      top: 9px;
+      animation: pagmar-home-scroll-invite 1.35s ease-in-out .13s infinite;
+    }
+
+    @keyframes pagmar-home-scroll-invite {
+      0%, 100% {
+        opacity: .18;
+        transform: translate(-50%, -3px) rotate(45deg);
+      }
+      50% {
+        opacity: 1;
+        transform: translate(-50%, 4px) rotate(45deg);
+      }
+    }
 
     .pagmar-home-videos {
       width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: clamp(28px, 4.5vw, 72px);
       padding: 0 3.25vw clamp(44px, 6vw, 110px);
       background: #eeeeee;
     }
@@ -2046,8 +2643,6 @@ function setupHomeScreenDom() {
       padding: 0;
       background: #d8d8d8;
       object-fit: cover;
-      filter: grayscale(100%);
-      -webkit-filter: grayscale(100%);
     }
 
     .pagmar-home-video-first {
@@ -2113,11 +2708,16 @@ function setupHomeScreenDom() {
   overlap.appendChild(hebrewLayer);
   overlap.appendChild(arabicLayer);
 
+  homeScreenScrollGuide = document.createElement("div");
+  homeScreenScrollGuide.className = "pagmar-home-scroll-guide";
+
   const arrow = document.createElement("div");
   arrow.className = "pagmar-home-scroll-arrow";
   arrow.setAttribute("role", "button");
   arrow.setAttribute("aria-label", "Scroll to videos");
   arrow.tabIndex = 0;
+
+  homeScreenScrollGuide.appendChild(arrow);
 
   const videos = document.createElement("div");
   videos.className = "pagmar-home-videos";
@@ -2136,7 +2736,7 @@ function setupHomeScreenDom() {
   videos.appendChild(firstVideo);
   videos.appendChild(secondVideo);
   intro.appendChild(overlap);
-  intro.appendChild(arrow);
+  intro.appendChild(homeScreenScrollGuide);
   homeScreenRoot.appendChild(intro);
   homeScreenRoot.appendChild(videos);
   document.body.appendChild(homeScreenRoot);
@@ -2145,7 +2745,39 @@ function setupHomeScreenDom() {
     videos.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
-  arrow.addEventListener("click", scrollToVideos);
+  function pauseHomeInteractionGuide() {
+    if (!homeScreenScrollGuide) return;
+
+    homeScreenScrollGuide.classList.add("is-hidden");
+
+    if (homeInteractionGuideRestartTimer !== null) {
+      clearTimeout(homeInteractionGuideRestartTimer);
+    }
+
+    homeInteractionGuideRestartTimer = setTimeout(function() {
+      homeInteractionGuideRestartTimer = null;
+
+      if (
+        homePopupOpen &&
+        homeScreenRoot &&
+        homeScreenRoot.style.display !== "none" &&
+        homeScreenScrollGuide
+      ) {
+        homeScreenScrollGuide.classList.remove("is-hidden");
+      }
+    }, PAGMAR_GUIDE_INACTIVITY_MS);
+  }
+
+  homeInteractionGuideActivityHandler = pauseHomeInteractionGuide;
+
+  homeScreenRoot.addEventListener("scroll", function() {
+    pauseHomeInteractionGuide();
+  }, { passive: true });
+
+  arrow.addEventListener("click", function() {
+    pauseHomeInteractionGuide();
+    scrollToVideos();
+  });
   arrow.addEventListener("keydown", function(event) {
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
@@ -2191,6 +2823,14 @@ function openHomeScreenDom() {
   updateHomeScreenDomLayout();
   homeScreenRoot.style.display = "block";
   homeScreenRoot.scrollTop = 0;
+  if (homeScreenScrollGuide) {
+    homeScreenScrollGuide.classList.remove("is-hidden");
+  }
+
+  if (homeInteractionGuideRestartTimer !== null) {
+    clearTimeout(homeInteractionGuideRestartTimer);
+    homeInteractionGuideRestartTimer = null;
+  }
 
   requestAnimationFrame(function() {
     playHomeScreenVideos();
@@ -3058,6 +3698,21 @@ function setupBorderScreenDom() {
       -webkit-user-drag: none;
     }
 
+    .pagmar-border-svg-base {
+      z-index: 1;
+      opacity: 0.18;
+    }
+
+    .pagmar-border-svg-trail {
+      z-index: 2;
+      opacity: 1;
+      clip-path: inset(0 0 100% 0);
+      will-change: clip-path;
+      filter:
+        drop-shadow(1px 0 2px rgba(46,245,255,.18))
+        drop-shadow(-1px 0 2px rgba(255,53,53,.14));
+    }
+
     .pagmar-border-hotspot {
       position: absolute;
       z-index: 8;
@@ -3207,9 +3862,10 @@ function setupBorderScreenDom() {
 
   const board = document.createElement("div");
   board.className = "pagmar-border-board";
+  borderScreenBoard = board;
 
   const borderSvg = document.createElement("img");
-  borderSvg.className = "pagmar-border-svg";
+  borderSvg.className = "pagmar-border-svg pagmar-border-svg-base";
   borderSvg.src = "border.svg";
   borderSvg.alt = "Border constellation path";
   borderSvg.addEventListener("load", function() {
@@ -3220,6 +3876,16 @@ function setupBorderScreenDom() {
     }
   });
   borderSvg.addEventListener("error", function() {
+    console.log("MISSING FILE: border.svg (put it beside sketch.js)");
+  });
+
+  borderScreenTrailSvg = document.createElement("img");
+  borderScreenTrailSvg.className =
+    "pagmar-border-svg pagmar-border-svg-trail";
+  borderScreenTrailSvg.src = "border.svg";
+  borderScreenTrailSvg.alt = "";
+  borderScreenTrailSvg.setAttribute("aria-hidden", "true");
+  borderScreenTrailSvg.addEventListener("error", function() {
     console.log("MISSING FILE: border.svg (put it beside sketch.js)");
   });
 
@@ -3260,6 +3926,7 @@ function setupBorderScreenDom() {
   );
 
   board.appendChild(borderSvg);
+  board.appendChild(borderScreenTrailSvg);
   board.appendChild(borderScreenTextPanel);
   board.appendChild(hotspotOne);
   board.appendChild(hotspotTwo);
@@ -3269,6 +3936,11 @@ function setupBorderScreenDom() {
   stage.appendChild(board);
   borderScreenRoot.appendChild(stage);
   document.body.appendChild(borderScreenRoot);
+
+  borderScreenRoot.addEventListener("scroll", function() {
+    updateBorderTrailFromScroll();
+    markPagmarInteractionGuideActivity("border");
+  }, { passive: true });
 
   borderScreenAudio = new Audio("boom.mp3");
   borderScreenAudio.preload = "auto";
@@ -3294,6 +3966,7 @@ function createBorderScreenHotspot(extraClass, label, onActivate) {
       event.preventDefault();
       event.stopPropagation();
     }
+    markPagmarInteractionGuideActivity("border");
     onActivate();
   }
 
@@ -3346,9 +4019,100 @@ function playBorderScreenSound() {
   }
 }
 
+function clampBorderTrailProgress(value) {
+  return Math.max(0, Math.min(1, value));
+}
+
+function getBorderTrailScrollProgress() {
+  if (!borderScreenRoot || !borderScreenBoard) return 0;
+
+  const maxScroll = Math.max(
+    1,
+    borderScreenRoot.scrollHeight - borderScreenRoot.clientHeight
+  );
+
+  // The last interactive point is at 76.8089% of the border board.
+  // Complete the trail when that point reaches approximately the middle
+  // of the visible screen, rather than waiting for overscroll below it.
+  const lastPointContentY =
+    borderScreenBoard.offsetTop +
+    borderScreenBoard.offsetHeight * 0.768089;
+
+  const naturalEndScroll =
+    lastPointContentY - borderScreenRoot.clientHeight * 0.52;
+
+  const endScroll = Math.max(
+    1,
+    Math.min(maxScroll, naturalEndScroll)
+  );
+
+  return clampBorderTrailProgress(
+    borderScreenRoot.scrollTop / endScroll
+  );
+}
+
+function drawBorderTrailProgress(progress) {
+  if (!borderScreenTrailSvg) return;
+
+  const safeProgress = clampBorderTrailProgress(progress);
+
+  // Keep the first point visible at rest. As the visitor scrolls, the exact
+  // border SVG is uncovered from top to bottom like one connected trail.
+  const visiblePercent = 2.4 + safeProgress * 97.6;
+  const hiddenPercent = Math.max(0, 100 - visiblePercent);
+
+  borderScreenTrailSvg.style.clipPath =
+    "inset(0 0 " + hiddenPercent.toFixed(3) + "% 0)";
+}
+
+function animateBorderTrail() {
+  borderTrailAnimationFrame = null;
+
+  const difference =
+    borderTrailTargetProgress - borderTrailProgress;
+
+  if (Math.abs(difference) < 0.001) {
+    borderTrailProgress = borderTrailTargetProgress;
+    drawBorderTrailProgress(borderTrailProgress);
+    return;
+  }
+
+  // Smoothly follow the finger/scroll without lagging far behind it.
+  borderTrailProgress += difference * 0.24;
+  drawBorderTrailProgress(borderTrailProgress);
+
+  borderTrailAnimationFrame =
+    requestAnimationFrame(animateBorderTrail);
+}
+
+function updateBorderTrailFromScroll() {
+  borderTrailTargetProgress = getBorderTrailScrollProgress();
+
+  if (borderTrailTargetProgress >= 0.997) {
+    borderTrailTargetProgress = 1;
+  }
+
+  if (borderTrailAnimationFrame === null) {
+    borderTrailAnimationFrame =
+      requestAnimationFrame(animateBorderTrail);
+  }
+}
+
+function resetBorderTrail() {
+  if (borderTrailAnimationFrame !== null) {
+    cancelAnimationFrame(borderTrailAnimationFrame);
+    borderTrailAnimationFrame = null;
+  }
+
+  borderTrailProgress = 0;
+  borderTrailTargetProgress = 0;
+  drawBorderTrailProgress(0);
+}
+
 function resetBorderScreenDom() {
   borderScreenImageRevealed = false;
   borderScreenTextRevealed = false;
+  resetBorderTrail();
 
   if (borderScreenImagePanel) {
     borderScreenImagePanel.classList.remove("is-visible");
@@ -3375,6 +4139,10 @@ function updateBorderScreenDomLayout() {
   const headerHeight = Math.round(getHeaderHeight());
   borderScreenRoot.style.top = headerHeight + "px";
   borderScreenRoot.style.height = Math.max(0, window.innerHeight - headerHeight - getFooterHeight()) + "px";
+
+  if (borderPopupOpen) {
+    updateBorderTrailFromScroll();
+  }
 }
 
 function openBorderConstellationScreen() {
@@ -3382,6 +4150,8 @@ function openBorderConstellationScreen() {
 
   borderPopupOpen = true;
   borderActivePointId = null;
+  borderInteractionGuideDismissed = false;
+  borderInteractionGuideLastActivityAt = -Infinity;
 
   memoryPopupOpen = false;
   homePopupOpen = false;
@@ -3398,6 +4168,7 @@ function openBorderConstellationScreen() {
     borderScreenRoot.style.display = "block";
     requestAnimationFrame(function() {
       borderScreenRoot.scrollTop = 0;
+      resetBorderTrail();
     });
   }
 }
@@ -3405,6 +4176,11 @@ function openBorderConstellationScreen() {
 function closeBorderConstellationScreen() {
   borderActivePointId = null;
   borderPopupOpen = false;
+
+  if (borderTrailAnimationFrame !== null) {
+    cancelAnimationFrame(borderTrailAnimationFrame);
+    borderTrailAnimationFrame = null;
+  }
 
   if (borderScreenAudio) {
     try {
@@ -4639,6 +5415,10 @@ function hideSharedPagmarLens(syncFrame) {
 function toggleSharedPagmarLens(colorName) {
   const requestedColor = colorName === "cyan" ? "cyan" : "red";
 
+  if (belongingPopupOpen) {
+    markPagmarInteractionGuideActivity("belonging");
+  }
+
   if (sharedLensVisible && activeLensColor === requestedColor) {
     hideSharedPagmarLens();
     return;
@@ -4846,6 +5626,7 @@ function returnToMainGridFromNavigation(replayEntryAnimation = true) {
   currentSelection = [];
 
   if (replayEntryAnimation) {
+    gridInteractionGuideDismissed = false;
     restartGridEntryAnimation();
   }
 }
@@ -4886,6 +5667,29 @@ function keyPressed() {
   }
 }
 
+function mouseWheel(event) {
+  if (!belongingPopupOpen) return;
+
+  let verticalDelta =
+    event && typeof event.deltaY === "number" ? event.deltaY : 0;
+  let horizontalDelta =
+    event && typeof event.deltaX === "number" ? event.deltaX : 0;
+
+  let dominantDelta =
+    abs(horizontalDelta) > abs(verticalDelta)
+      ? horizontalDelta
+      : verticalDelta;
+
+  // Positive wheel movement advances from the right panel toward the left.
+  scrollBelongingHorizontally(dominantDelta * 1.08);
+
+  if (event && typeof event.preventDefault === "function") {
+    event.preventDefault();
+  }
+
+  return false;
+}
+
 function mousePressed() {
   if (handleFooterClick(mouseX, mouseY)) return;
 
@@ -4894,7 +5698,15 @@ function mousePressed() {
   }
 
   if (belongingPopupOpen) {
-    // The shared top-bar title is handled above and returns to the main grid.
+    // The shared top-bar title is handled above. Dragging anywhere in the
+    // content area moves the belonging gallery horizontally.
+    if (
+      mouseY > getHeaderHeight() &&
+      mouseY < height - getFooterHeight()
+    ) {
+      beginBelongingHorizontalDrag(mouseX);
+    }
+
     return;
   }
 
@@ -5073,7 +5885,10 @@ function mousePressed() {
 }
 
 function mouseDragged() {
-  if (belongingPopupOpen) return;
+  if (belongingPopupOpen) {
+    updateBelongingHorizontalDrag(mouseX);
+    return;
+  }
   if (memoryPopupOpen) return;
   if (borderPopupOpen) return;
   if (landPopupOpen) return;
@@ -5120,7 +5935,10 @@ function mouseDragged() {
 }
 
 function mouseReleased() {
-  if (belongingPopupOpen) return;
+  if (belongingPopupOpen) {
+    endBelongingHorizontalDrag();
+    return;
+  }
   if (memoryPopupOpen) return;
   if (borderPopupOpen) return;
   if (landPopupOpen) return;
@@ -5202,6 +6020,8 @@ function addCellUnderMouse() {
 
   if (currentSelection.length === 0) {
     currentSelection.push(nearestCell);
+    gridInteractionGuideDismissed = true;
+    updatePagmarInteractionGuide();
     playGridSelectionCellSounds(1);
     return;
   }
@@ -5844,6 +6664,20 @@ function windowResized() {
   calculateLayout();
   updateBorderScreenDomLayout();
   updateHomeScreenDomLayout();
+
+  if (belongingPopupOpen) {
+    let previousMax = max(1, belongingHorizontalMaxOffset);
+    let normalizedPosition = constrain(
+      belongingHorizontalTarget / previousMax,
+      0,
+      1
+    );
+
+    belongingHorizontalMaxOffset = max(0, width);
+    belongingHorizontalTarget =
+      normalizedPosition * belongingHorizontalMaxOffset;
+    belongingHorizontalOffset = belongingHorizontalTarget;
+  }
   if (sharedLensCircle && sharedLensCircle.style.display !== "none") {
     positionSharedLens(
       sharedLensX === null ? window.innerWidth * 0.15 : sharedLensX,
@@ -5944,6 +6778,8 @@ function easeInOutCubic(t) {
 
 function openMemoryPopup() {
   memoryPopupOpen = true;
+  memoryInteractionGuideDismissed = false;
+  memoryInteractionGuideLastActivityAt = -Infinity;
   memoryPointerIsDown = false;
   memoryPointerPreviousPos = null;
   memoryBreezeStrength = 0;
@@ -5994,8 +6830,12 @@ function isInsideMemoryCloseButton(mx, my) {
 
 function openBelongingDoorsScreen() {
   belongingPopupOpen = true;
+  belongingInteractionGuideDismissed = false;
+  belongingInteractionGuideLastActivityAt = -Infinity;
   belongingPopupOpenStartedAt = millis();
   belongingActiveDoorId = null;
+
+  resetBelongingHorizontalScroll();
 
   memoryPopupOpen = false;
   homePopupOpen = false;
@@ -6008,6 +6848,8 @@ function openBelongingDoorsScreen() {
 function closeBelongingDoorsScreen() {
   closeBelongingActivePanel();
   belongingPopupOpen = false;
+  belongingHorizontalDragging = false;
+  belongingHorizontalVelocity = 0;
 }
 
 function openBelongingDoor(doorId) {
@@ -6073,6 +6915,117 @@ function stopBelongingDoorMedia(door) {
   }
 }
 
+function resetBelongingHorizontalScroll() {
+  belongingHorizontalOffset = 0;
+  belongingHorizontalTarget = 0;
+  belongingHorizontalMaxOffset = max(0, width);
+  belongingHorizontalDragging = false;
+  belongingHorizontalVelocity = 0;
+}
+
+function updateBelongingHorizontalScroll() {
+  belongingHorizontalMaxOffset = max(0, width);
+
+  belongingHorizontalTarget = constrain(
+    belongingHorizontalTarget,
+    0,
+    belongingHorizontalMaxOffset
+  );
+
+  if (!belongingHorizontalDragging) {
+    // Soft inertial motion after releasing a swipe.
+    if (abs(belongingHorizontalVelocity) > 0.05) {
+      belongingHorizontalTarget = constrain(
+        belongingHorizontalTarget + belongingHorizontalVelocity,
+        0,
+        belongingHorizontalMaxOffset
+      );
+      belongingHorizontalVelocity *= 0.90;
+    } else {
+      belongingHorizontalVelocity = 0;
+    }
+  }
+
+  // The content follows the target smoothly, matching the restrained
+  // horizontal gallery movement of the reference site.
+  belongingHorizontalOffset = lerp(
+    belongingHorizontalOffset,
+    belongingHorizontalTarget,
+    belongingHorizontalDragging ? 0.42 : 0.14
+  );
+
+  if (
+    abs(belongingHorizontalOffset - belongingHorizontalTarget) < 0.08
+  ) {
+    belongingHorizontalOffset = belongingHorizontalTarget;
+  }
+}
+
+function beginBelongingHorizontalDrag(pointerX) {
+  markPagmarInteractionGuideActivity("belonging");
+  belongingHorizontalDragging = true;
+  belongingHorizontalDragStartX = pointerX;
+  belongingHorizontalDragStartOffset = belongingHorizontalTarget;
+  belongingHorizontalLastPointerX = pointerX;
+  belongingHorizontalLastPointerTime = millis();
+  belongingHorizontalVelocity = 0;
+}
+
+function updateBelongingHorizontalDrag(pointerX) {
+  if (!belongingHorizontalDragging) return;
+
+  markPagmarInteractionGuideActivity("belonging");
+  let now = millis();
+  let elapsed = max(1, now - belongingHorizontalLastPointerTime);
+  let pointerDelta = pointerX - belongingHorizontalLastPointerX;
+
+  belongingHorizontalTarget = constrain(
+    belongingHorizontalDragStartOffset +
+      (pointerX - belongingHorizontalDragStartX),
+    0,
+    belongingHorizontalMaxOffset
+  );
+
+  // Convert pointer speed into a short horizontal continuation after release.
+  belongingHorizontalVelocity = constrain(
+    (pointerDelta / elapsed) * 17,
+    -42,
+    42
+  );
+
+  belongingHorizontalLastPointerX = pointerX;
+  belongingHorizontalLastPointerTime = now;
+}
+
+function endBelongingHorizontalDrag() {
+  if (!belongingHorizontalDragging) return;
+
+  belongingHorizontalDragging = false;
+
+  // Settle onto the nearest full-screen panel after the swipe.
+  let projected =
+    belongingHorizontalTarget + belongingHorizontalVelocity * 8;
+  let destination =
+    projected >= belongingHorizontalMaxOffset * 0.5
+      ? belongingHorizontalMaxOffset
+      : 0;
+
+  belongingHorizontalTarget = destination;
+  belongingHorizontalVelocity = 0;
+}
+
+function scrollBelongingHorizontally(delta) {
+  if (!belongingPopupOpen) return;
+
+  markPagmarInteractionGuideActivity("belonging");
+  belongingHorizontalTarget = constrain(
+    belongingHorizontalTarget + delta,
+    0,
+    belongingHorizontalMaxOffset
+  );
+  belongingHorizontalVelocity = 0;
+}
+
 function getBelongingDoorRects() {
   let count = belongingDoors.length;
   let headerH = getHeaderHeight();
@@ -6117,21 +7070,19 @@ function getBelongingContinueButtonRect(layout) {
 
 function drawBelongingScreen() {
   background(238);
+  updateBelongingHorizontalScroll();
 
   let headerH = getHeaderHeight();
   let footerH = getFooterHeight();
-  let contentTop = headerH + max(28, height * 0.045);
-  let contentBottom = height - footerH - max(22, height * 0.035);
-  let contentH = max(120, contentBottom - contentTop);
-
-  let outerMargin = max(28, width * 0.045);
-  let gap = max(28, width * 0.035);
-  let textW = width * 0.43;
-  let imageAreaX = outerMargin + textW + gap;
-  let imageAreaW = width - imageAreaX - outerMargin;
+  let viewportTop = headerH;
+  let viewportBottom = height - footerH;
+  let viewportH = max(1, viewportBottom - viewportTop);
+  let panelW = width;
+  let offset = belongingHorizontalOffset;
 
   let rawProgress = constrain(
-    (millis() - belongingPopupOpenStartedAt) / belongingPopupOpenDuration,
+    (millis() - belongingPopupOpenStartedAt) /
+      belongingPopupOpenDuration,
     0,
     1
   );
@@ -6140,27 +7091,40 @@ function drawBelongingScreen() {
   push();
   resetMatrix();
 
-  translate(0, (1 - progress) * 14);
+  // Clip the horizontally moving gallery between the fixed header and footer.
+  drawingContext.save();
+  drawingContext.beginPath();
+  drawingContext.rect(0, viewportTop, width, viewportH);
+  drawingContext.clip();
 
+  // First full-screen panel: the existing bilingual belonging text.
+  // The horizontal sequence is ordered from right to left.
+  let textPanelX = offset;
+  let textMargin = max(42, width * 0.14);
   drawBelongingOverlayTextScreen(
-    outerMargin,
-    contentTop,
-    textW,
-    contentH,
+    textPanelX + textMargin,
+    viewportTop + max(24, viewportH * 0.06),
+    panelW - textMargin * 2,
+    viewportH - max(48, viewportH * 0.12),
     progress
   );
 
+  // Second full-screen panel: the existing multiplied red/cyan image.
+  let imagePanelX = -panelW + offset;
+  let imageMarginX = max(34, width * 0.08);
+  let imageMarginY = max(30, viewportH * 0.07);
   drawBelongingLayeredImage(
-    imageAreaX,
-    contentTop,
-    imageAreaW,
-    contentH,
+    imagePanelX + imageMarginX,
+    viewportTop + imageMarginY,
+    panelW - imageMarginX * 2,
+    viewportH - imageMarginY * 2,
     progress
   );
 
+  drawingContext.restore();
   pop();
 
-  // Keep navigation identical to the rest of the project.
+  // Navigation remains fixed while the content moves horizontally beneath it.
   drawTopBar(255);
   drawSharedFooter(255);
 }
@@ -6209,12 +7173,12 @@ function drawBelongingOverlayTextScreen(x, y, w, h, progress) {
   }
 
   let startY = y + max(0, (h - totalHeight) * 0.5);
-  let centerX = x + w * 0.5;
+  let rightX = x + w;
   let ctx = drawingContext;
 
   ctx.save();
   ctx.globalCompositeOperation = "multiply";
-  ctx.textAlign = "center";
+  ctx.textAlign = "right";
   ctx.textBaseline = "top";
   ctx.font = getSimplerCanvasFont(fontSize);
   ctx.direction = "rtl";
@@ -6231,10 +7195,10 @@ function drawBelongingOverlayTextScreen(x, y, w, h, progress) {
     }
 
     ctx.fillStyle = "rgba(255,53,53," + (0.96 * progress) + ")";
-    ctx.fillText(arLine, centerX + 2.2, currentY - 1.5);
+    ctx.fillText(arLine, rightX + 2.2, currentY - 1.5);
 
     ctx.fillStyle = "rgba(46,245,255," + (0.98 * progress) + ")";
-    ctx.fillText(heLine, centerX - 2.2, currentY + 2.6);
+    ctx.fillText(heLine, rightX - 2.2, currentY + 2.6);
 
     currentY += lineHeight;
   }
@@ -7506,6 +8470,8 @@ function memoryPointerDownHandler(e) {
 
   e.preventDefault();
 
+  markPagmarInteractionGuideActivity("memory");
+
   startMemoryAudioInput();
   updateMemoryPointerPosition(e);
 
@@ -7535,6 +8501,7 @@ function memoryPointerMoveHandler(e) {
 
   e.preventDefault();
 
+  markPagmarInteractionGuideActivity("memory");
   updateMemoryPointerPosition(e);
   updateMemoryBreezeFromPointerMotion();
 }
@@ -8216,7 +9183,7 @@ function ipadTouchEnded(e) {
   return false;
 }
 
-const REFLECTION_TICKET_EMBEDDED_HTML = "<!DOCTYPE html>\n<html lang=\"he\" dir=\"rtl\">\n<head>\n  <base href=\"./\" />\n  <meta charset=\"UTF-8\" />\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n  <title>My Reflection Ticket</title>\n  <script src=\"https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js\"></script>\n  <style>\n    @font-face {\n      font-family: \"SimplerMono\";\n      src: url(\"SimplerPro_HLAR_Mono-Regular 2.otf\") format(\"opentype\");\n      font-display: swap;\n    }\n\n    @font-face {\n      font-family: \"AlfaBravoMedium\";\n      src: url(\"AlfaBravo-Medium.otf\") format(\"opentype\");\n      font-style: normal;\n      font-weight: 500;\n      font-display: swap;\n    }\n\n    :root {\n      --bg: #eeeeee;\n      --line: #b5b5b5;\n      --text: #111111;\n      --muted: #6c6c6c;\n      --red: #ff1d25;\n      --blue: #00f0ff;\n      --arabic-ui: #ff3535;\n      --hebrew-ui: #2ef5ff;\n      --topbar-h: clamp(56px, 10.5vh, 100px);\n      --footer-h: clamp(44px, 5.2vh, 58px);\n      --type-ui: clamp(13px, 1.6vh, 16px);\n      --type-nav: clamp(14px, 1.9vh, 18px);\n      --type-title: clamp(30px, 4.3vh, 46px);\n      --type-body: clamp(14px, 1.8vh, 18px);\n    }\n\n    * {\n      box-sizing: border-box;\n    }\n\n    html, body {\n      margin: 0;\n      width: 100%;\n      height: 100%;\n      overflow: hidden;\n      background: var(--bg);\n      color: var(--text);\n      font-family: \"SimplerMono\", Arial, Helvetica, sans-serif;\n    }\n\n    body {\n      display: flex;\n      flex-direction: column;\n    }\n\n    #topBar {\n      height: var(--topbar-h);\n      border-bottom: 1px solid var(--line);\n      font-family: \"AlfaBravoMedium\", \"SimplerMono\", Arial, Helvetica, sans-serif;\n      font-weight: 500;\n      display: none;\n      grid-template-columns: 22% 52% 26%;\n      align-items: center;\n      gap: 0;\n      padding: 0;\n      background: var(--bg);\n      direction: ltr;\n    }\n\n    #foundStatus {\n      justify-self: start;\n      padding-left: 3.7vw;\n      display: flex;\n      align-items: center;\n      gap: 12px;\n      min-width: 0;\n      direction: ltr;\n      font-size: var(--type-ui);\n      line-height: 1;\n    }\n\n    #foundNumber {\n      width: 48px;\n      flex: 0 0 48px;\n      text-align: left;\n      direction: ltr;\n      font-variant-numeric: tabular-nums;\n    }\n\n    #foundNumber > span {\n      direction: ltr;\n      unicode-bidi: isolate;\n      text-align: left;\n    }\n\n    .overlapText {\n      display: grid;\n      position: relative;\n      min-width: 0;\n      isolation: isolate;\n    }\n\n    .overlapText > span {\n      grid-area: 1 / 1;\n      display: block;\n      direction: rtl;\n      unicode-bidi: plaintext;\n      mix-blend-mode: multiply;\n    }\n\n    /* The numeric counter must stay visibly red + cyan instead of becoming black. */\n    #foundNumber > span {\n      mix-blend-mode: normal;\n    }\n\n    .hebrewLayer {\n      color: var(--hebrew-ui);\n      transform: translate(2.1px, 1.1px);\n      opacity: 1;\n      z-index: 2;\n    }\n\n    .arabicLayer {\n      color: var(--arabic-ui);\n      transform: translate(-2.1px, -1.1px);\n      opacity: 1;\n      z-index: 1;\n    }\n\n    #foundOverlap {\n      min-width: 92px;\n      text-align: right;\n      font-size: inherit;\n      line-height: 1;\n    }\n\n    #wordNavigation {\n      justify-self: center;\n      width: 100%;\n      max-width: 650px;\n      display: flex;\n      align-items: center;\n      justify-content: center;\n      gap: clamp(8px, 1vw, 18px);\n      direction: rtl;\n      overflow: hidden;\n    }\n\n    .navWord {\n      position: relative;\n      flex: 0 0 auto;\n      min-width: 46px;\n      text-align: center;\n      font-size: var(--type-nav);\n      line-height: 1;\n      white-space: nowrap;\n    }\n\n    #projectTitle {\n      justify-self: end;\n      width: 100%;\n      padding-right: 2.6vw;\n      text-align: right;\n      font-size: var(--type-title);\n      font-weight: 500;\n      letter-spacing: -0.04em;\n      line-height: 0.9;\n      cursor: pointer;\n    }\n\n    #projectTitle .hebrewLayer,\n    #projectTitle .arabicLayer {\n      text-align: right;\n    }\n\n    #mainArea {\n      height: calc(100vh - var(--footer-h));\n      display: grid;\n      grid-template-columns: minmax(0, 2.22fr) minmax(430px, 0.78fr);\n      background: var(--bg);\n      direction: ltr;\n    }\n\n    #canvasPane,\n    #questionsPane {\n      min-width: 0;\n      min-height: 0;\n      position: relative;\n    }\n\n    #canvasPane {\n      border-right: 1px solid var(--line);\n      display: flex;\n      align-items: center;\n      justify-content: center;\n      overflow: hidden;\n    }\n\n    #canvasArea {\n      width: 100%;\n      height: 100%;\n      position: relative;\n      display: flex;\n      align-items: center;\n      justify-content: center;\n    }\n\n    #questionsPane {\n      overflow-y: hidden;\n      overflow-x: hidden;\n      direction: rtl;\n      padding: clamp(14px, 2vh, 24px) clamp(22px, 2.3vw, 44px);\n      scrollbar-width: none;\n      display: flex;\n      align-items: stretch;\n    }\n\n    #questionsPane::-webkit-scrollbar {\n      display: none;\n    }\n\n    #questionsInner {\n      width: 100%;\n      max-width: 560px;\n      height: 100%;\n      min-height: 0;\n      margin: 0 auto;\n      display: flex;\n      flex-direction: column;\n      justify-content: space-between;\n      gap: clamp(3px, 0.7vh, 8px);\n    }\n\n    .questionBlock {\n      width: 100%;\n      min-height: 0;\n      margin: 0;\n      text-align: right;\n      flex: 1 1 0;\n      display: flex;\n      flex-direction: column;\n      justify-content: center;\n    }\n\n    .questionText {\n      width: 100%;\n      min-height: 0;\n      margin-bottom: clamp(3px, 0.45vh, 7px);\n      font-size: var(--type-body);\n      line-height: 1.08;\n      font-weight: 400;\n      letter-spacing: 0;\n      text-align: right;\n    }\n\n    .questionText > span {\n      text-align: right;\n      max-width: 100%;\n    }\n\n    .sliderRow {\n      width: 100%;\n      display: flex;\n      justify-content: center;\n      align-items: center;\n      direction: ltr;\n    }\n\n    .sliderScale {\n      width: min(440px, 100%);\n      direction: ltr;\n    }\n\n    .sliderTrackWrap {\n      --fill-percent: 0%;\n      --slider-point-size: 3px;\n      --slider-thumb-size: 4px;\n      position: relative;\n      width: 100%;\n      height: 18px;\n    }\n\n    /* The dashed remainder uses the exact same centerline as the points. */\n    .sliderTrackWrap::before {\n      content: \"\";\n      position: absolute;\n      z-index: 0;\n      left: 0;\n      right: 0;\n      top: 50%;\n      height: 1px;\n      transform: translateY(-50%);\n      background: repeating-linear-gradient(\n        to right,\n        rgba(17, 17, 17, 0.20) 0,\n        rgba(17, 17, 17, 0.20) 11px,\n        transparent 11px,\n        transparent 30px\n      );\n      pointer-events: none;\n    }\n\n    /* The solid section ends at the exact center of the selected point. */\n    .sliderTrackWrap::after {\n      content: \"\";\n      position: absolute;\n      z-index: 1;\n      left: 0;\n      top: 50%;\n      width: var(--fill-percent);\n      height: 1px;\n      transform: translateY(-50%);\n      background: #111;\n      pointer-events: none;\n    }\n\n    input[type=\"range\"] {\n      -webkit-appearance: none;\n      appearance: none;\n      position: absolute;\n      z-index: 3;\n      top: 0;\n      left: calc(var(--slider-thumb-size) / -2);\n      width: calc(100% + var(--slider-thumb-size));\n      height: 100%;\n      margin: 0;\n      padding: 0;\n      background: transparent;\n      outline: none;\n      cursor: pointer;\n      touch-action: none;\n    }\n\n    input[type=\"range\"]::-webkit-slider-runnable-track {\n      height: 1px;\n      background: transparent;\n    }\n\n    input[type=\"range\"]::-webkit-slider-thumb {\n      -webkit-appearance: none;\n      appearance: none;\n      width: 4px;\n      height: 4px;\n      border-radius: 0;\n      background: #111111;\n      border: 0;\n      margin-top: -1.5px;\n    }\n\n    input[type=\"range\"]::-moz-range-track {\n      height: 1px;\n      background: transparent;\n    }\n\n    input[type=\"range\"]::-moz-range-progress {\n      height: 1px;\n      background: transparent;\n    }\n\n    input[type=\"range\"]::-moz-range-thumb {\n      width: 4px;\n      height: 4px;\n      border-radius: 0;\n      background: #111111;\n      border: 0;\n    }\n\n    .scaleMarkers {\n      position: absolute;\n      z-index: 2;\n      inset: 0;\n      pointer-events: none;\n    }\n\n    .scaleMarkers span {\n      position: absolute;\n      top: 50%;\n      width: var(--slider-point-size);\n      height: var(--slider-point-size);\n      background: #111;\n      transform: translate(-50%, -50%);\n    }\n\n    .scaleMarkers span:nth-child(1) { left: 0%; }\n    .scaleMarkers span:nth-child(2) { left: 25%; }\n    .scaleMarkers span:nth-child(3) { left: 50%; }\n    .scaleMarkers span:nth-child(4) { left: 75%; }\n    .scaleMarkers span:nth-child(5) { left: 100%; }\n\n    .anchorRow {\n      display: grid;\n      grid-template-columns: 1fr 1fr 1fr;\n      align-items: start;\n      margin-top: 2px;\n      direction: ltr;\n    }\n\n    .anchorItem {\n      min-width: 0;\n      font-size: clamp(8px, 1.05vh, 10px);\n      line-height: 1.06;\n      color: var(--muted);\n    }\n\n    .anchorItem:nth-child(1) { text-align: left; }\n    .anchorItem:nth-child(2) { text-align: center; }\n    .anchorItem:nth-child(3) { text-align: right; }\n\n    .anchorNumber {\n      display: block;\n      margin-bottom: 1px;\n      color: #111;\n      font-family: \"SimplerMono\", monospace;\n      font-size: clamp(7px, 0.85vh, 8px);\n      direction: ltr;\n    }\n\n    .anchorOverlap {\n      width: 100%;\n      min-height: 14px;\n      font-size: clamp(8px, 1.05vh, 10px);\n    }\n\n    .anchorOverlap > span {\n      white-space: normal;\n    }\n\n    .anchorItem:nth-child(1) .anchorOverlap > span { text-align: left; }\n    .anchorItem:nth-child(2) .anchorOverlap > span { text-align: center; }\n    .anchorItem:nth-child(3) .anchorOverlap > span { text-align: right; }\n\n    .hiddenValue {\n      display: none;\n    }\n\n    #sideLabelPane,\n    #languageTabs {\n      display: none !important;\n    }\n\n    #printButton {\n      position: absolute;\n      left: clamp(24px, 2vw, 38px);\n      bottom: clamp(20px, 2.2vh, 28px);\n      z-index: 10;\n      min-width: 118px;\n      border: 1px solid #231f20;\n      background: #231f20;\n      color: #ececec;\n      padding: 11px 22px 10px;\n      font-family: \"SimplerMono\", Arial, Helvetica, sans-serif;\n      font-size: clamp(12px, 0.85vw, 16px);\n      line-height: 1;\n      letter-spacing: 0.08em;\n      text-align: center;\n      cursor: pointer;\n      border-radius: 999px;\n    }\n\n    #printButton:hover,\n    #printButton:focus-visible {\n      background: transparent;\n      color: #231f20;\n      outline: none;\n    }\n\n    @media (min-width: 1600px) and (min-height: 850px) {\n      #questionsInner {\n        height: 100%;\n      }\n\n      .sliderScale {\n        width: min(480px, 100%);\n      }\n    }\n\n    @media (max-width: 1380px) {\n      #topBar {\n        grid-template-columns: 155px minmax(0, 1fr) 250px;\n        padding-inline: 28px;\n      }\n\n      #wordNavigation {\n        gap: clamp(8px, 1vw, 14px);\n      }\n\n      .navWord {\n        min-width: 38px;\n        font-size: 14px;\n      }\n\n      #mainArea {\n        grid-template-columns: minmax(0, 1.82fr) minmax(410px, 0.88fr);\n      }\n\n      #questionsInner {\n        min-height: 0;\n      }\n    }\n\n    @media (min-width: 1081px) and (max-height: 760px) {\n      #questionsPane {\n        padding-top: 9px;\n        padding-bottom: 9px;\n      }\n\n      #questionsInner {\n        gap: 2px;\n      }\n\n      .questionText {\n        font-size: 12px;\n        line-height: 1.04;\n        margin-bottom: 2px;\n      }\n\n      .sliderTrackWrap,\n      input[type=\"range\"] {\n        height: 15px;\n      }\n\n\n      .anchorRow {\n        margin-top: 0;\n      }\n\n      .anchorItem,\n      .anchorOverlap {\n        font-size: 7.5px;\n        line-height: 1;\n      }\n    }\n\n    @media (max-width: 1080px) {\n      html, body {\n        overflow: auto;\n      }\n\n      #topBar {\n        height: auto;\n        min-height: 104px;\n        grid-template-columns: 1fr auto;\n        gap: 14px 20px;\n        padding: 16px 24px;\n      }\n\n      #wordNavigation {\n        grid-column: 1 / -1;\n        grid-row: 2;\n        flex-wrap: wrap;\n        gap: 13px 24px;\n      }\n\n      #mainArea {\n        height: auto;\n        min-height: calc(100vh - 104px);\n        grid-template-columns: 1fr;\n        grid-template-rows: min(58vw, 56vh) auto;\n      }\n\n      #canvasPane {\n        border-right: 0;\n        border-bottom: 1px solid var(--line);\n      }\n\n      #questionsPane {\n        display: block;\n        padding: 42px 28px 60px;\n      }\n\n      #questionsInner {\n        height: auto;\n        min-height: 0;\n        display: block;\n      }\n\n      .questionBlock {\n        margin-bottom: 38px;\n      }\n    }\n\n    @media (max-width: 640px) {\n      #topBar {\n        grid-template-columns: 1fr;\n        justify-items: center;\n      }\n\n      #foundStatus,\n      #projectTitle {\n        justify-self: center;\n      }\n\n      #wordNavigation {\n        display: none;\n      }\n\n      #mainArea {\n        grid-template-rows: 44vh auto;\n      }\n\n      #questionsPane {\n        padding: 34px 20px 52px;\n      }\n\n      .questionText {\n        font-size: 16px;\n      }\n\n      .anchorItem {\n        font-size: 9px;\n      }\n    }\n\n    #sharedFooter {\n      height: var(--footer-h);\n      flex: 0 0 var(--footer-h);\n      border-top: 1px solid rgba(0,0,0,.2);\n      background: var(--bg);\n      display: flex;\n      align-items: center;\n      justify-content: space-between;\n      padding: 0 3.7vw;\n      direction: ltr;\n      font-family: \"AlfaBravoMedium\", \"SimplerMono\", monospace;\n      position: relative;\n    }\n\n    #footerActions {\n      position: absolute;\n      left: 50%;\n      top: 50%;\n      transform: translate(-50%, -50%);\n      display: flex;\n      align-items: center;\n      gap: clamp(8px, 0.6vw, 12px);\n      direction: ltr;\n    }\n\n    .footerAction {\n      width: clamp(120px, 7.8vw, 156px);\n      height: clamp(22px, 2.4vh, 28px);\n      border: 1px solid rgba(17,17,17,.62);\n      border-radius: 999px;\n      background: transparent;\n      padding: 0;\n      cursor: pointer;\n      touch-action: manipulation;\n      font-family: \"AlfaBravoMedium\", \"SimplerMono\", monospace;\n      font-size: var(--type-ui);\n      line-height: 1;\n    }\n\n    .footerAction > span {\n      align-self: center;\n      justify-self: center;\n      text-align: center;\n    }\n\n    #footerEyes { display: flex; align-items: center; gap: 14px; }\n    .footerEye {\n      width: 25px;\n      height: 25px;\n      border-radius: 50%;\n      padding: 0;\n      cursor: pointer;\n      background: transparent;\n      border: 0;\n      position: relative;\n      touch-action: manipulation;\n    }\n    .footerEye::after {\n      content: \"\";\n      position: absolute;\n      inset: 4px;\n      border-radius: 50%;\n      background: var(--eye-color);\n      opacity: 1;\n    }\n    .footerEye.isActive {\n      border: 1px dashed #111;\n    }\n    #footerCurrentWord {\n      font-size: clamp(13px, 1.7vh, 18px);\n      min-width: 120px;\n      text-align: right;\n    }\n\n    #printPage {\n      display: none;\n    }\n\n    #printTicketImage {\n      display: block;\n    }\n\n    @media print {\n      @page {\n        size: 148mm 105mm;\n        margin: 0;\n      }\n\n      html, body {\n        width: 148mm;\n        height: 105mm;\n        margin: 0 !important;\n        padding: 0 !important;\n        background: #ffffff !important;\n        overflow: hidden !important;\n      }\n\n      #topBar,\n      #mainArea,\n      #sharedFooter {\n        display: none !important;\n      }\n\n    #sharedFooter {\n      height: var(--footer-h);\n      flex: 0 0 var(--footer-h);\n      border-top: 1px solid rgba(0,0,0,.2);\n      background: var(--bg);\n      display: flex;\n      align-items: center;\n      justify-content: space-between;\n      padding: 0 3.7vw;\n      direction: ltr;\n      font-family: \"AlfaBravoMedium\", \"SimplerMono\", monospace;\n    }\n\n    #footerEyes { display: flex; align-items: center; gap: 14px; }\n    .footerEye {\n      width: 25px;\n      height: 25px;\n      border-radius: 50%;\n      padding: 0;\n      cursor: pointer;\n      background: transparent;\n      border: 0;\n      position: relative;\n      touch-action: manipulation;\n    }\n    .footerEye::after {\n      content: \"\";\n      position: absolute;\n      inset: 4px;\n      border-radius: 50%;\n      background: var(--eye-color);\n      opacity: 1;\n    }\n    .footerEye.isActive {\n      border: 1px dashed #111;\n    }\n    #footerCurrentWord {\n      font-size: clamp(13px, 1.7vh, 18px);\n      min-width: 120px;\n      text-align: right;\n    }\n\n    #printPage {\n        display: flex !important;\n        width: 148mm;\n        height: 105mm;\n        align-items: center;\n        justify-content: center;\n        background: #ffffff;\n        overflow: hidden;\n      }\n\n      #printTicketImage {\n        width: 148mm;\n        height: 105mm;\n        max-width: none;\n        max-height: none;\n        object-fit: fill;\n        image-rendering: auto;\n        display: block;\n        -webkit-print-color-adjust: exact;\n        print-color-adjust: exact;\n      }\n    }\n  </style>\n</head>\n<body>\n  <header id=\"topBar\">\n    <div id=\"foundStatus\" aria-label=\"0 מתוך 5 נמצאו / تم العثور على 0 من 5\">\n      <div id=\"foundOverlap\" class=\"overlapText\" aria-hidden=\"true\">\n        <span class=\"hebrewLayer\" lang=\"he\">נמצאו</span>\n        <span class=\"arabicLayer\" lang=\"ar\">تم العثور</span>\n      </div>\n      <div id=\"foundNumber\" class=\"overlapText\" aria-hidden=\"true\">\n        <span class=\"hebrewLayer\" lang=\"he\">5/0</span>\n        <span class=\"arabicLayer\" lang=\"ar\">5/0</span>\n      </div>\n    </div>\n\n    <nav id=\"wordNavigation\" aria-label=\"מילות הפרויקט / كلمات المشروع\">\n      <div class=\"navWord overlapText\"><span class=\"hebrewLayer\" lang=\"he\">גבול</span><span class=\"arabicLayer\" lang=\"ar\">حدود</span></div>\n      <div class=\"navWord overlapText\"><span class=\"hebrewLayer\" lang=\"he\">בית</span><span class=\"arabicLayer\" lang=\"ar\">بيت</span></div>\n      <div class=\"navWord overlapText\"><span class=\"hebrewLayer\" lang=\"he\">השתקפות</span><span class=\"arabicLayer\" lang=\"ar\">انعكاس</span></div>\n      <div class=\"navWord overlapText\"><span class=\"hebrewLayer\" lang=\"he\">זיכרון</span><span class=\"arabicLayer\" lang=\"ar\">ذاكرة</span></div>\n      <div class=\"navWord overlapText\"><span class=\"hebrewLayer\" lang=\"he\">שפה</span><span class=\"arabicLayer\" lang=\"ar\">لغة</span></div>\n    </nav>\n\n    <div id=\"projectTitle\" class=\"overlapText\" aria-label=\"ציפור מעופפת / عصفور طاير\">\n      <span id=\"titleHe\" class=\"hebrewLayer\" lang=\"he\" title=\"כרטיס בעברית\">ציפור מעופפת</span>\n      <span id=\"titleAr\" class=\"arabicLayer\" lang=\"ar\" title=\"البطاقة بالعربية\">عصفور طاير</span>\n    </div>\n  </header>\n\n  <main id=\"mainArea\">\n    <section id=\"canvasPane\">\n      <div id=\"canvasArea\"></div>\n      <button id=\"printButton\" type=\"button\" aria-label=\"Print A6 ticket\">PRINT</button>\n    </section>\n\n    <section id=\"questionsPane\">\n      <div id=\"questionsInner\"></div>\n    </section>\n\n    <aside id=\"sideLabelPane\">\n      <div class=\"sideWordWrap\">\n        <div class=\"sideWordPrimary\">انعكاس</div>\n        <div class=\"sideWordSecondary\">השתקפות</div>\n      </div>\n    </aside>\n  </main>\n\n\n  <footer id=\"sharedFooter\">\n    <div id=\"footerEyes\" aria-label=\"Select draggable color lens\">\n      <button id=\"footerArabicEye\" class=\"footerEye\" style=\"--eye-color:#ff3535\" aria-label=\"Select red lens\"></button>\n      <button id=\"footerHebrewEye\" class=\"footerEye\" style=\"--eye-color:#2ef5ff\" aria-label=\"Select cyan lens\"></button>\n    </div>\n    <div id=\"footerActions\" aria-label=\"Navigation actions\">\n      <button id=\"footerGridButton\" class=\"footerAction overlapText\" type=\"button\" aria-label=\"Return to grid\">\n        <span class=\"hebrewLayer\" lang=\"he\">הגריד</span>\n        <span class=\"arabicLayer\" lang=\"ar\">الشبكة</span>\n      </button>\n      <button id=\"footerHintButton\" class=\"footerAction overlapText\" type=\"button\" aria-label=\"Hint\">\n        <span class=\"hebrewLayer\" lang=\"he\">רמז</span>\n        <span class=\"arabicLayer\" lang=\"ar\">تلميح</span>\n      </button>\n    </div>\n    <div id=\"footerCurrentWord\" class=\"overlapText\" aria-label=\"Current word\">\n      <span class=\"hebrewLayer\" lang=\"he\">השתקפות</span>\n      <span class=\"arabicLayer\" lang=\"ar\">انعكاس</span>\n    </div>\n  </footer>\n\n  <section id=\"printPage\">\n    <img id=\"printTicketImage\" alt=\"Printed reflection ticket\" />\n  </section>\n\n<script>\nlet answers = [1, 2, 2, 2, 2];\nlet patternSeed = 24111;\nlet userSeed = 0;\nlet cnv;\nlet ticketG;\nlet ticketDirty = true;\nlet currentLang = \"he\";\nlet ticketLang = \"he\";\nlet ticketFont = null;\nlet fontReady = false;\n\nconst RED = \"#ff1d25\";\nconst BLUE = \"#00f0ff\";\nconst BLACK = \"#111111\";\nconst GRAY_BG = \"#ececec\";\nconst LIGHT_BLUE = \"#9bbbf8\";\nconst ARABIC_TEXT_COLOR = \"#ff3535\";\nconst HEBREW_TEXT_COLOR = \"#2ef5ff\";\nconst ANSWER_BLOCK_COLOR = \"#231f20\";\n\n// True A6 landscape dimensions.\n// 148 × 105 mm rendered at 300 DPI = 1748 × 1240 pixels.\nconst A6_WIDTH_MM = 148;\nconst A6_HEIGHT_MM = 105;\nconst EXPORT_DPI = 300;\nconst PRINT_W = Math.round((A6_WIDTH_MM / 25.4) * EXPORT_DPI);\nconst PRINT_H = Math.round((A6_HEIGHT_MM / 25.4) * EXPORT_DPI);\nconst PRINT_RATIO = PRINT_H / PRINT_W;\n\n// Five square pattern modules stacked vertically in each strip.\nconst PATTERN_BLOCK_COUNT = 5;\nconst PATTERN_STRIP_COUNT = 2;\n\nconst CONTENT = {\n  he: {\n    foundStatusText: \"נמצאו\",\n    questions: [\n      \"1. עד כמה המשמעות של מה שאת/ה רוצה לומר משתנה במעבר בין שפה אחת לאחרת?\",\n      \"2. עד כמה את/ה מרגיש/ה שגרסה אחרת שלך מופיעה בכל שפה?\",\n      \"3. עד כמה את/ה מרגיש/ה שאחרים מבינים אותך אחרת כשאת/ה מדבר/ת בשפה שונה?\",\n      \"4. עד כמה השפה שבה את/ה מדבר/ת משפיעה על תחושת השייכות שלך?\",\n      \"5. עד כמה יש בך דברים שאף שפה אינה מצליחה לבטא במלואם?\"\n    ],\n    scaleAnchors: [\n      { value: \"1\", text: \"כמעט בכלל לא\" },\n      { value: \"3\", text: \"לפעמים\" },\n      { value: \"5\", text: \"במידה רבה מאוד\" }\n    ],\n    ticketTitle: \"בין השפות\",\n    ticketVersion: \"פרויקט גמר 2026\",\n    reflectionLabel: \"קריאה אישית\",\n    noteLabel: \"נבנה מחמש התשובות שלך\",\n    footerNote: \"התוצאה מתארת את אופן התגובה שלך ברגע זה; היא אינה קביעה קבועה.\",\n    barcodeLabel: \"השתקפות\",\n    labels: [\n      \"מה עובר בין השפות\",\n      \"איך את/ה משתנה\",\n      \"איך אחרים מבינים אותך\",\n      \"איך השפה משפיעה על שייכות\",\n      \"מה קשה לבטא\"\n    ],\n    shortLabels: [\n      \"משמעות\",\n      \"שינוי\",\n      \"הבנה\",\n      \"שייכות\",\n      \"ביטוי\"\n    ],\n    statements: [\n      [\n        \"המילים כמעט נשארות שלמות.\",\n        \"רק מעט משתנה בדרך.\",\n        \"חלק מהכוונה מתחלף.\",\n        \"המשמעות מגיעה חלקית.\",\n        \"הרבה נשאר מאחור.\"\n      ],\n      [\n        \"אותו קול מלווה אותך.\",\n        \"הטון משתנה מעט.\",\n        \"צד אחר בך מופיע.\",\n        \"כל שפה משנה את הנוכחות שלך.\",\n        \"בכל שפה מופיעה גרסה אחרת שלך.\"\n      ],\n      [\n        \"רוב האנשים שומעים את כוונתך.\",\n        \"לפעמים משהו נקרא אחרת.\",\n        \"חלק ממך מתפספס.\",\n        \"הנחות קודמות נכנסות לשיחה.\",\n        \"את/ה נזהר/ת לפני כל משפט.\"\n      ],\n      [\n        \"השייכות נשארת יציבה.\",\n        \"הנוחות משתנה מעט.\",\n        \"המקום משנה את התחושה.\",\n        \"השפה פותחת או סוגרת מרחב.\",\n        \"השייכות תלויה באופן שבו את/ה נשמע/ת.\"\n      ],\n      [\n        \"רוב הדברים מוצאים מילים.\",\n        \"מעט נשאר בפנים.\",\n        \"יש דברים בלי ניסוח שלם.\",\n        \"הרבה נשאר שקט.\",\n        \"הדברים הכבדים ביותר נשארים בלי שם.\"\n      ]\n    ],\n    reflectionSystem: {\n      opening: {\n        low: [\n          \"את/ה עובר/ת בין השפות בלי לאבד את הכיוון שלך. הצליל משתנה, אבל מה שרצית לומר נשאר קרוב למקור.\",\n          \"המעבר בין השפות טבעי לך יחסית. המילים מתחלפות, אך הקול שמאחוריהן נשאר מוכר וברור.\"\n        ],\n        mid: [\n          \"בכל שפה הקול שלך מקבל גוון מעט אחר. את/ה מתאים/ה את המילים למקום ולאנשים, אך שומר/ת על חוט שמחבר בין הגרסאות.\",\n          \"המעבר בין השפות משנה אצלך את הקצב ואת מידת החשיפה. לא הכול משתנה, אבל בכל מרחב מופיע צד מעט אחר שלך.\"\n        ],\n        high: [\n          \"המעבר בין שפות דורש ממך בחירה מחודשת בכל פעם. חלקים מסוימים נעשים ברורים יותר, ואחרים נסוגים כדי שתוכל/י להישמע ולהיות מובן/ת.\",\n          \"בכל שפה את/ה בונה מחדש את הדרך שבה תופסים אותך. המאמץ אינו רק למצוא מילים, אלא גם לבחור מה יופיע ומה יישאר ברקע.\"\n        ]\n      },\n      dimensions: [\n        {\n          low: [\"רוב המשמעות עוברת איתך, ולכן אינך נדרש/ת לוותר על הרבה בדרך.\"],\n          mid: [\"העיקר מגיע, אך כמה גוונים דקים נשארים מאחור או מקבלים צורה אחרת.\"],\n          high: [\"מה שמגיע לאחרים הוא רק חלק ממה שהתכוונת לשאת איתך.\"]\n        },\n        {\n          low: [\"הנוכחות שלך נשארת דומה גם כשהשפה מתחלפת.\"],\n          mid: [\"כל שפה מזמינה צד מעט אחר שלך, בלי למחוק את הצדדים האחרים.\"],\n          high: [\"כל שפה מציבה אותך במקום אחר ומבליטה גרסה שונה שלך.\"]\n        },\n        {\n          low: [\"ברוב המקרים הכוונה שלך נקראת כפי שרצית.\"],\n          mid: [\"לפעמים אחרים פוגשים רק שכבה אחת, ואת/ה משלים/ה את החסר תוך כדי.\"],\n          high: [\"המבט של אחרים נכנס בין המילים ומשנה את האופן שבו שומעים אותך.\"]\n        },\n        {\n          low: [\"תחושת המקום שלך אינה תלויה מאוד בשפה שבה דיברת.\"],\n          mid: [\"הנוחות והשייכות משתנות לפי הסביבה ולפי מי שנמצא מולך.\"],\n          high: [\"השפה משפיעה על המקום שבו את/ה מרשה לעצמך להיפתח ולהרגיש חלק.\"]\n        },\n        {\n          low: [\"רוב הדברים החשובים מצליחים לקבל מילים.\"],\n          mid: [\"יש חוויות שמגיעות רק עד קצה המשפט ונשארות שם.\"],\n          high: [\"חלקים משמעותיים נשארים בלי ניסוח מלא, אך ממשיכים להיות נוכחים.\"]\n        }\n      ],\n      anchors: [\n        [\"הדיוק נשאר נקודת יציבות עבורך.\"],\n        [\"הקול שלך נשאר מוכר גם כשהמסגרת משתנה.\"],\n        [\"יש לך ביטחון יחסי באופן שבו הכוונה שלך נקלטת.\"],\n        [\"יש בך תחושת מקום שאינה תלויה רק בשפה.\"],\n        [\"כשמשהו חשוב באמת, את/ה עדיין מוצא/ת דרך לומר אותו.\"]\n      ],\n      closing: {\n        contrast: [\n          \"הפער בין התשובות מראה שלא כל מרחב דורש ממך אותו מאמץ; יש מקומות שבהם את/ה נושם/ת בחופשיות, ואחרים שבהם כל מילה נשקלת.\",\n          \"החוויה שלך משתנה מאוד לפי ההקשר. במקומות מסוימים הדברים זורמים, ובאחרים את/ה נדרש/ת לעצור, לבדוק ולבחור מחדש.\"\n        ],\n        even: [\n          \"התשובות שלך קרובות זו לזו, ולכן החוויה אינה נשלטת בידי מוקד אחד. היא נבנית מצירוף שקט של התאמות קטנות שחוזרות לאורך היום.\",\n          \"אין גורם יחיד שמוביל את התוצאה שלך. המשמעות, הקול, המבט והשייכות נעים יחד ומשפיעים זה על זה במידה דומה.\"\n        ],\n        balanced: [\n          \"שני מוקדים בולטים יותר מן האחרים, אך הם אינם מספרים את כל הסיפור. הם מצביעים על המקומות שבהם המעבר בין שפות מורגש אצלך במיוחד.\",\n          \"התוצאה שלך מאוזנת, אך שני אזורים דורשים יותר תשומת לב. שם את/ה מרגיש/ה באופן הברור ביותר את המרחק בין מה שרצית לומר לבין מה שהצליח להגיע.\"\n        ]\n      }\n    }\n  },\n  ar: {\n    foundStatusText: \"تم العثور\",\n    questions: [\n      \"1. إلى أي مدى يتغيّر معنى ما تريد/ين قوله عند الانتقال من لغة إلى أخرى؟\",\n      \"2. إلى أي مدى تشعر/ين أن نسخة أخرى منك تظهر في كل لغة؟\",\n      \"3. إلى أي مدى تشعر/ين أن الآخرين يفهمونك بشكل مختلف عندما تتحدث/ين بلغة أخرى؟\",\n      \"4. إلى أي مدى تؤثر اللغة التي تتحدث/ين بها في إحساسك بالانتماء؟\",\n      \"5. إلى أي مدى توجد فيك أشياء لا تستطيع أي لغة التعبير عنها بالكامل؟\"\n    ],\n    scaleAnchors: [\n      { value: \"1\", text: \"تقريبًا أبدًا\" },\n      { value: \"3\", text: \"أحيانًا\" },\n      { value: \"5\", text: \"إلى حد كبير جدًا\" }\n    ],\n    ticketTitle: \"بين اللغات\",\n    ticketVersion: \"مشروع تخرج 2026\",\n    reflectionLabel: \"قراءة شخصية\",\n    noteLabel: \"مبنية على إجاباتك الخمس\",\n    footerNote: \"النتيجة تصف أسلوب استجابتك في هذه اللحظة؛ وليست حكمًا ثابتًا.\",\n    barcodeLabel: \"انعكاس\",\n    labels: [\n      \"ما الذي ينتقل بين اللغات\",\n      \"كيف تتغير/ين\",\n      \"كيف يفهمك الآخرون\",\n      \"كيف تؤثر اللغة في الانتماء\",\n      \"ما الذي يصعب التعبير عنه\"\n    ],\n    shortLabels: [\n      \"معنى\",\n      \"تغيّر\",\n      \"فهم\",\n      \"انتماء\",\n      \"تعبير\"\n    ],\n    statements: [\n      [\n        \"تبقى الكلمات شبه كاملة.\",\n        \"يتغير القليل في الطريق.\",\n        \"يتبدل جزء من القصد.\",\n        \"يصل المعنى بشكل جزئي.\",\n        \"يبقى الكثير خلفك.\"\n      ],\n      [\n        \"يرافقك الصوت نفسه.\",\n        \"تتغير النبرة قليلًا.\",\n        \"يظهر جانب آخر منك.\",\n        \"كل لغة تغيّر حضورك.\",\n        \"في كل لغة تظهر نسخة أخرى منك.\"\n      ],\n      [\n        \"غالبًا يسمع الآخرون قصدك.\",\n        \"أحيانًا يُقرأ شيء بشكل آخر.\",\n        \"يضيع جزء منك في الفهم.\",\n        \"تدخل الافتراضات إلى الحديث.\",\n        \"تتأنى قبل كل جملة.\"\n      ],\n      [\n        \"يبقى انتماؤك ثابتًا.\",\n        \"تتغير الراحة قليلًا.\",\n        \"يغيّر المكان الإحساس.\",\n        \"تفتح اللغة مساحة أو تغلقها.\",\n        \"يتعلق الانتماء بالطريقة التي تُسمع بها.\"\n      ],\n      [\n        \"تجد معظم الأشياء كلماتها.\",\n        \"يبقى القليل في الداخل.\",\n        \"هناك أمور بلا صياغة كاملة.\",\n        \"يبقى الكثير صامتًا.\",\n        \"أثقل ما فيك يبقى أحيانًا بلا اسم.\"\n      ]\n    ],\n    reflectionSystem: {\n      opening: {\n        low: [\n          \"تتنقل/ين بين اللغات من دون أن تفقد/ي اتجاهك. يتغيّر الصوت، لكن ما أردت قوله يبقى قريبًا من أصله.\",\n          \"الانتقال بين اللغات طبيعي لديك نسبيًا. تتبدل الكلمات، لكن الصوت الذي خلفها يبقى مألوفًا وواضحًا.\"\n        ],\n        mid: [\n          \"في كل لغة يكتسب صوتك نبرة مختلفة قليلًا. تعدّل/ين الكلمات بحسب المكان ومن أمامك، لكنك تحافظ/ين على خيط يصل بين النسخ المختلفة.\",\n          \"الانتقال بين اللغات يغيّر الإيقاع ودرجة انكشافك. لا يتغير كل شيء، لكن جانبًا مختلفًا منك يظهر في كل مساحة.\"\n        ],\n        high: [\n          \"الانتقال بين اللغات يطلب منك اختيارًا جديدًا في كل مرة. تصبح بعض الجوانب أوضح، وتتراجع أخرى كي تتمكن/ي من أن تُسمع/ي وأن تُفهم/ي.\",\n          \"في كل لغة تعيد/ين بناء الطريقة التي يراك بها الآخرون. الجهد ليس في إيجاد الكلمات فقط، بل في اختيار ما سيظهر وما سيبقى في الخلف.\"\n        ]\n      },\n      dimensions: [\n        {\n          low: [\"يصل معظم المعنى معك، لذلك لا تضطر/ين إلى ترك الكثير في الطريق.\"],\n          mid: [\"يصل الأساس، لكن بعض التفاصيل الدقيقة تبقى خلفك أو تأخذ شكلًا آخر.\"],\n          high: [\"ما يصل إلى الآخرين ليس إلا جزءًا مما أردت حمله معك.\"]\n        },\n        {\n          low: [\"يبقى حضورك قريبًا من نفسه حتى عندما تتبدل اللغة.\"],\n          mid: [\"تدعو كل لغة جانبًا مختلفًا قليلًا منك، من دون أن تمحو الجوانب الأخرى.\"],\n          high: [\"تضعك كل لغة في موقع مختلف وتبرز نسخة أخرى منك.\"]\n        },\n        {\n          low: [\"في معظم الأحيان يُفهم قصدك كما أردت.\"],\n          mid: [\"أحيانًا يرى الآخرون طبقة واحدة فقط، فتكمّل/ين ما ينقص أثناء الحديث.\"],\n          high: [\"تدخل نظرة الآخرين بين الكلمات وتغيّر الطريقة التي يُسمع بها صوتك.\"]\n        },\n        {\n          low: [\"إحساسك بالمكان لا يعتمد كثيرًا على اللغة التي تتحدث/ين بها.\"],\n          mid: [\"تتبدل الراحة والانتماء بحسب المحيط وبحسب من يقف أمامك.\"],\n          high: [\"تؤثر اللغة في المكان الذي تسمح/ين فيه لنفسك بالانفتاح والشعور بأنك جزء منه.\"]\n        },\n        {\n          low: [\"تنجح معظم الأمور المهمة في العثور على كلماتها.\"],\n          mid: [\"هناك تجارب تصل إلى حافة الجملة ثم تبقى هناك.\"],\n          high: [\"تبقى أجزاء مهمة من دون صياغة كاملة، لكنها تظل حاضرة فيك.\"]\n        }\n      ],\n      anchors: [\n        [\"تبقى الدقة نقطة ثبات لديك.\"],\n        [\"يبقى صوتك مألوفًا حتى عندما يتغير الإطار.\"],\n        [\"لديك ثقة نسبية في الطريقة التي يصل بها قصدك.\"],\n        [\"لديك إحساس بالمكان لا يعتمد على اللغة وحدها.\"],\n        [\"عندما يكون الأمر مهمًا، تجد/ين طريقة لقول ما تريد/ين.\"]\n      ],\n      closing: {\n        contrast: [\n          \"الفارق بين الإجابات يبيّن أن كل مساحة لا تطلب منك الجهد نفسه؛ في أماكن تتنفس/ين بحرية، وفي أخرى تزن/ين كل كلمة.\",\n          \"تتغير تجربتك كثيرًا بحسب السياق. في بعض الأماكن تسير الأمور بسهولة، وفي أخرى تتوقف/ين لتراجع/ي وتختار/ي من جديد.\"\n        ],\n        even: [\n          \"إجاباتك متقاربة، لذلك لا يسيطر محور واحد على تجربتك. تتكوّن النتيجة من مجموعة هادئة من التعديلات الصغيرة التي تتكرر خلال اليوم.\",\n          \"لا يوجد عامل واحد يقود نتيجتك. المعنى والصوت ونظرة الآخرين والانتماء تتحرك معًا وتؤثر في بعضها بدرجات متقاربة.\"\n        ],\n        balanced: [\n          \"يظهر محوران أكثر من غيرهما، لكنهما لا يرويان القصة كاملة. إنهما يشيران إلى الأماكن التي تشعر/ين فيها بوضوح أكبر بالانتقال بين اللغات.\",\n          \"نتيجتك متوازنة، لكن جانبين يحتاجان إلى انتباه أكبر. هناك تشعر/ين بوضوح بالمسافة بين ما أردت قوله وما استطاع الوصول.\"\n        ]\n      }\n    }\n  }\n};\n\nfunction setup() {\n  const area = document.getElementById(\"canvasArea\");\n  cnv = createCanvas(area.clientWidth, area.clientHeight);\n  cnv.parent(\"canvasArea\");\n  pixelDensity(1);\n  noSmooth();\n  imageMode(CORNER);\n\n  ticketG = createGraphics(PRINT_W, PRINT_H);\n  ticketG.pixelDensity(1);\n  ticketG.noSmooth();\n\n  // One random identity seed per visitor. It stays stable while that visitor\n  // changes answers during the current session.\n  userSeed = generateUserSeed();\n\n  setupQuestionsUI();\n  setupLanguageTabs();\n  setupPrintControl();\n  setupSharedFooterControls();\n  updateLanguageUI();\n  tryLoadFont();\n  markTicketDirty();\n}\n\nfunction tryLoadFont() {\n  // Use the CSS @font-face instead of p5.loadFont(). p5.Font draws glyph paths\n  // in source order and does not reliably apply Arabic/Hebrew bidi shaping.\n  // Native Canvas text with direction=\"rtl\" keeps letters connected and ordered.\n  if (document.fonts && document.fonts.load) {\n    document.fonts\n      .load('32px \"SimplerMono\"')\n      .then(function() {\n        fontReady = true;\n        markTicketDirty();\n      })\n      .catch(function() {\n        console.warn(\"Could not load SimplerPro_HLAR_Mono-Regular 2.otf. Falling back to Arial.\");\n        fontReady = false;\n        markTicketDirty();\n      });\n  } else {\n    fontReady = false;\n    markTicketDirty();\n  }\n}\n\nfunction draw() {\n  background(GRAY_BG);\n  if (ticketDirty) {\n    renderHighResolutionTicket();\n  }\n  drawTicketPreview();\n}\n\nfunction setupLanguageTabs() {\n  const projectTitle = document.getElementById(\"projectTitle\");\n  if (projectTitle) {\n    projectTitle.addEventListener(\"click\", function(event) {\n      event.preventDefault();\n      event.stopPropagation();\n      if (window.parent && window.parent !== window && typeof window.parent.closeReflectionTicket === \"function\") {\n        window.parent.closeReflectionTicket();\n        if (typeof window.parent.returnToMainGridFromNavigation === \"function\") {\n          window.parent.returnToMainGridFromNavigation();\n        }\n      }\n    });\n  }\n}\n\nfunction updateLanguageUI() {\n  ticketLang = currentLang;\n  document.body.dataset.ticketLanguage = currentLang;\n  markTicketDirty();\n}\n\nfunction renderQuestions() {\n  const panel = document.getElementById(\"questionsInner\");\n  const hebrewQuestions = CONTENT.he.questions;\n  const arabicQuestions = CONTENT.ar.questions;\n  const hebrewAnchors = CONTENT.he.scaleAnchors;\n  const arabicAnchors = CONTENT.ar.scaleAnchors;\n  panel.innerHTML = \"\";\n\n  for (let i = 0; i < hebrewQuestions.length; i++) {\n    const block = document.createElement(\"section\");\n    block.className = \"questionBlock\";\n    block.setAttribute(\"aria-labelledby\", \"question-he-\" + (i + 1));\n\n    const qText = document.createElement(\"div\");\n    qText.className = \"questionText overlapText\";\n\n    const qHe = document.createElement(\"span\");\n    qHe.className = \"hebrewLayer\";\n    qHe.lang = \"he\";\n    qHe.id = \"question-he-\" + (i + 1);\n    qHe.textContent = hebrewQuestions[i];\n\n    const qAr = document.createElement(\"span\");\n    qAr.className = \"arabicLayer\";\n    qAr.lang = \"ar\";\n    qAr.textContent = arabicQuestions[i];\n\n    qText.appendChild(qHe);\n    qText.appendChild(qAr);\n\n    const row = document.createElement(\"div\");\n    row.className = \"sliderRow\";\n\n    const scale = document.createElement(\"div\");\n    scale.className = \"sliderScale\";\n\n    const trackWrap = document.createElement(\"div\");\n    trackWrap.className = \"sliderTrackWrap\";\n\n    const slider = document.createElement(\"input\");\n    slider.type = \"range\";\n    slider.min = \"1\";\n    slider.max = \"5\";\n    slider.step = \"1\";\n    slider.value = String(answers[i]);\n    slider.id = \"q\" + (i + 1);\n    slider.setAttribute(\"aria-label\", hebrewQuestions[i] + \" / \" + arabicQuestions[i]);\n    slider.setAttribute(\"aria-valuetext\", String(answers[i]));\n\n    const markers = document.createElement(\"div\");\n    markers.className = \"scaleMarkers\";\n    markers.setAttribute(\"aria-hidden\", \"true\");\n    for (let markerIndex = 0; markerIndex < 5; markerIndex++) {\n      markers.appendChild(document.createElement(\"span\"));\n    }\n\n    const anchorRow = document.createElement(\"div\");\n    anchorRow.className = \"anchorRow\";\n\n    for (let anchorIndex = 0; anchorIndex < 3; anchorIndex++) {\n      const anchorItem = document.createElement(\"div\");\n      anchorItem.className = \"anchorItem\";\n\n      const anchorNumber = document.createElement(\"span\");\n      anchorNumber.className = \"anchorNumber\";\n      anchorNumber.textContent = hebrewAnchors[anchorIndex].value;\n\n      const anchorOverlap = document.createElement(\"div\");\n      anchorOverlap.className = \"anchorOverlap overlapText\";\n\n      const anchorHe = document.createElement(\"span\");\n      anchorHe.className = \"hebrewLayer\";\n      anchorHe.lang = \"he\";\n      anchorHe.textContent = hebrewAnchors[anchorIndex].text;\n\n      const anchorAr = document.createElement(\"span\");\n      anchorAr.className = \"arabicLayer\";\n      anchorAr.lang = \"ar\";\n      anchorAr.textContent = arabicAnchors[anchorIndex].text;\n\n      anchorOverlap.appendChild(anchorHe);\n      anchorOverlap.appendChild(anchorAr);\n      anchorItem.appendChild(anchorNumber);\n      anchorItem.appendChild(anchorOverlap);\n      anchorRow.appendChild(anchorItem);\n    }\n\n    const value = document.createElement(\"div\");\n    value.className = \"hiddenValue\";\n    value.id = \"v\" + (i + 1);\n    value.textContent = String(answers[i]);\n\n    updateSliderFill(slider, trackWrap);\n\n    slider.addEventListener(\"input\", function() {\n      answers[i] = Number(slider.value);\n      value.textContent = slider.value;\n      slider.setAttribute(\"aria-valuetext\", slider.value);\n      updateSliderFill(slider, trackWrap);\n      markTicketDirty();\n    });\n\n    trackWrap.appendChild(markers);\n    trackWrap.appendChild(slider);\n    scale.appendChild(trackWrap);\n    scale.appendChild(anchorRow);\n    row.appendChild(scale);\n\n    block.appendChild(qText);\n    block.appendChild(row);\n    block.appendChild(value);\n    panel.appendChild(block);\n  }\n}\n\nfunction updateSliderFill(slider, trackWrap) {\n  const min = Number(slider.min || 0);\n  const max = Number(slider.max || 100);\n  const value = Number(slider.value);\n  const percentage = max === min ? 0 : ((value - min) / (max - min)) * 100;\n  trackWrap.style.setProperty(\"--fill-percent\", percentage + \"%\");\n}\n\nfunction setupQuestionsUI() {\n  renderQuestions();\n}\n\nfunction markTicketDirty() {\n  patternSeed = makeSeedFromAnswers();\n  ticketDirty = true;\n}\n\nfunction generateUserSeed() {\n  // crypto gives different visitors different patterns even when their answers match.\n  if (window.crypto && window.crypto.getRandomValues) {\n    const values = new Uint32Array(1);\n    window.crypto.getRandomValues(values);\n    return values[0] % 900000 + 100000;\n  }\n\n  return Math.floor((Date.now() + Math.random() * 1000000) % 900000) + 100000;\n}\n\nfunction makeSeedFromAnswers() {\n  const answerSeed =\n    answers[0] * 101 +\n    answers[1] * 1009 +\n    answers[2] * 2017 +\n    answers[3] * 3011 +\n    answers[4] * 4001;\n\n  // Keep the visitor-specific seed and answer structure in the same deterministic code.\n  return Math.abs((userSeed * 37 + answerSeed * 97) % 100000000);\n}\n\nfunction windowResized() {\n  const area = document.getElementById(\"canvasArea\");\n  resizeCanvas(area.clientWidth, area.clientHeight);\n}\n\nfunction setupPrintControl() {\n  const printButton = document.getElementById(\"printButton\");\n\n  if (printButton) {\n    printButton.addEventListener(\"click\", finishAndPrint);\n  }\n\n  // Global listener works even while a slider or another control has focus.\n  window.addEventListener(\"keydown\", function(event) {\n    if (\n      event.key.toLowerCase() === \"p\" &&\n      !event.ctrlKey &&\n      !event.metaKey &&\n      !event.altKey\n    ) {\n      event.preventDefault();\n      finishAndPrint();\n    }\n  });\n}\n\n\nfunction setupSharedFooterControls() {\n  const arEye = document.getElementById(\"footerArabicEye\");\n  const heEye = document.getElementById(\"footerHebrewEye\");\n\n  if (arEye) arEye.addEventListener(\"click\", function() {\n    if (window.parent && window.parent !== window && typeof window.parent.selectPagmarLens === \"function\") {\n      window.parent.selectPagmarLens(\"red\");\n    }\n  });\n\n  if (heEye) heEye.addEventListener(\"click\", function() {\n    if (window.parent && window.parent !== window && typeof window.parent.selectPagmarLens === \"function\") {\n      window.parent.selectPagmarLens(\"cyan\");\n    }\n  });\n}\n\nfunction drawTicketPreview() {\n  const maxW = Math.min(width * 0.92, 1020);\n  const fitByWidth = width * 0.78;\n  const fitByHeight = height * 0.86 / PRINT_RATIO;\n\n  let previewW = Math.min(fitByWidth, fitByHeight, maxW);\n  previewW = Math.max(270, previewW);\n\n  const previewH = previewW * PRINT_RATIO;\n  const x = width / 2 - previewW / 2;\n  const y = height / 2 - previewH / 2;\n\n  image(ticketG, x, y, previewW, previewH);\n}\n\nfunction finishAndPrint() {\n  renderHighResolutionTicket();\n\n  const canvasForExport = ticketG.canvas || ticketG.elt;\n  const dataUrl = canvasForExport.toDataURL(\"image/png\");\n\n  // Use a dedicated print window with a strict A6 landscape page definition.\n  // This is more reliable than trying to print the interactive UI page itself.\n  const printWindow = window.open(\"\", \"reflectionTicketPrint\", \"width=900,height=700\");\n\n  if (!printWindow) {\n    alert(\"Please allow pop-ups so the A6 print window can open.\");\n    return;\n  }\n\n  const printHtml = `<!DOCTYPE html>\n<html>\n<head>\n  <meta charset=\"UTF-8\" />\n  <title>Print A6 Ticket</title>\n  <style>\n    @page {\n      size: 148mm 105mm;\n      margin: 0;\n    }\n    html, body {\n      margin: 0;\n      padding: 0;\n      width: 148mm;\n      height: 105mm;\n      overflow: hidden;\n      background: #ffffff;\n    }\n    body {\n      display: flex;\n      align-items: center;\n      justify-content: center;\n    }\n    img {\n      display: block;\n      width: 148mm;\n      height: 105mm;\n      object-fit: fill;\n      image-rendering: auto;\n      -webkit-print-color-adjust: exact;\n      print-color-adjust: exact;\n    }\n  </style>\n</head>\n<body>\n  <img id=\"ticketImage\" src=\"${dataUrl}\" alt=\"A6 ticket\" />\n  <script>\n    const img = document.getElementById(\"ticketImage\");\n    function runPrint() {\n      setTimeout(function() {\n        window.focus();\n        window.print();\n      }, 80);\n    }\n    if (img.complete) {\n      runPrint();\n    } else {\n      img.onload = runPrint;\n    }\n    window.onafterprint = function() { window.close(); };\n  <\\/script>\n</body>\n</html>`;\n\n  printWindow.document.open();\n  printWindow.document.write(printHtml);\n  printWindow.document.close();\n}\n\nfunction saveHighResTicketPNG() {\n  renderHighResolutionTicket();\n\n  const canvasForExport = ticketG.canvas || ticketG.elt;\n\n  canvasToPngBlobWithDpi(canvasForExport, EXPORT_DPI)\n    .then(function(blob) {\n      const link = document.createElement(\"a\");\n      const url = URL.createObjectURL(blob);\n\n      link.download =\n        \"my_reflection_A6_landscape_300dpi_\" + patternSeed + \".png\";\n      link.href = url;\n      document.body.appendChild(link);\n      link.click();\n      link.remove();\n\n      setTimeout(function() {\n        URL.revokeObjectURL(url);\n      }, 1000);\n    })\n    .catch(function(error) {\n      console.error(\"Could not save the A6 PNG with DPI metadata:\", error);\n\n      // Safe fallback: the pixel dimensions are still exact A6 at 300 DPI.\n      const link = document.createElement(\"a\");\n      link.download =\n        \"my_reflection_A6_landscape_1748x1240_\" + patternSeed + \".png\";\n      link.href = canvasForExport.toDataURL(\"image/png\");\n      link.click();\n    });\n}\n\n/**\n * Exports the canvas as a PNG and inserts a pHYs chunk so design/print\n * applications recognize the file as 300 DPI, not merely as a pixel image.\n */\nasync function canvasToPngBlobWithDpi(canvasElement, dpi) {\n  const originalBlob = await new Promise(function(resolve, reject) {\n    canvasElement.toBlob(function(blob) {\n      if (blob) resolve(blob);\n      else reject(new Error(\"Canvas PNG export returned no data.\"));\n    }, \"image/png\");\n  });\n\n  const originalBytes = new Uint8Array(await originalBlob.arrayBuffer());\n  const pngBytes = insertPngPhysicalResolution(originalBytes, dpi);\n\n  return new Blob([pngBytes], { type: \"image/png\" });\n}\n\nfunction insertPngPhysicalResolution(pngBytes, dpi) {\n  const PNG_SIGNATURE_LENGTH = 8;\n  const IHDR_TOTAL_LENGTH = 25; // 4 length + 4 type + 13 data + 4 CRC\n  const insertAt = PNG_SIGNATURE_LENGTH + IHDR_TOTAL_LENGTH;\n  const pixelsPerMeter = Math.round(dpi / 0.0254);\n\n  const data = new Uint8Array(9);\n  writeUint32BE(data, 0, pixelsPerMeter);\n  writeUint32BE(data, 4, pixelsPerMeter);\n  data[8] = 1; // Unit specifier: metres\n\n  const type = new Uint8Array([112, 72, 89, 115]); // \"pHYs\"\n  const chunk = new Uint8Array(4 + 4 + data.length + 4);\n\n  writeUint32BE(chunk, 0, data.length);\n  chunk.set(type, 4);\n  chunk.set(data, 8);\n\n  const crcInput = new Uint8Array(type.length + data.length);\n  crcInput.set(type, 0);\n  crcInput.set(data, type.length);\n  writeUint32BE(chunk, 8 + data.length, crc32(crcInput));\n\n  const output = new Uint8Array(pngBytes.length + chunk.length);\n  output.set(pngBytes.slice(0, insertAt), 0);\n  output.set(chunk, insertAt);\n  output.set(pngBytes.slice(insertAt), insertAt + chunk.length);\n\n  return output;\n}\n\nfunction writeUint32BE(bytes, offset, value) {\n  bytes[offset] = (value >>> 24) & 255;\n  bytes[offset + 1] = (value >>> 16) & 255;\n  bytes[offset + 2] = (value >>> 8) & 255;\n  bytes[offset + 3] = value & 255;\n}\n\nfunction crc32(bytes) {\n  let crc = 0xffffffff;\n\n  for (let i = 0; i < bytes.length; i++) {\n    crc ^= bytes[i];\n\n    for (let bit = 0; bit < 8; bit++) {\n      const mask = -(crc & 1);\n      crc = (crc >>> 1) ^ (0xedb88320 & mask);\n    }\n  }\n\n  return (crc ^ 0xffffffff) >>> 0;\n}\n\nfunction resetAnswers() {\n  ticketLang = currentLang;\n  answers = [1, 2, 2, 2, 2];\n\n  // RESET means a new visitor, so the same answer set does not repeat the previous pattern.\n  userSeed = generateUserSeed();\n\n  renderQuestions();\n  markTicketDirty();\n}\n\nfunction renderHighResolutionTicket() {\n  ticketG.clear();\n  ticketG.background(255);\n  ticketG.noSmooth();\n  drawTicketOn(ticketG, 0, 0, PRINT_W, PRINT_H);\n  ticketDirty = false;\n}\n\nfunction getTicketLayout(x, y, w, h) {\n  // Exact landscape proportions taken from the approved reference layout.\n  // The pattern nearly bleeds on three sides; the text has a compact left margin.\n  const pagePadding = w * 0.024;\n  const headerY = y + h * 0.079;\n\n  const patternY = y + h * 0.009;\n  const patternH = h * 0.974;\n\n  // The pattern area is made from two adjacent square strips. Each strip holds\n  // five square modules stacked vertically, matching the approved reference.\n  const singleStripW = patternH / PATTERN_BLOCK_COUNT;\n  const patternGap = Math.max(0, w * 0.0008);\n  const patternW = singleStripW * PATTERN_STRIP_COUNT + patternGap * (PATTERN_STRIP_COUNT - 1);\n  const patternRight = x + w * 0.992;\n  const patternX = patternRight - patternW;\n\n  const contentX = x + w * 0.024;\n  // Keep the text block closer to the pattern, following the approved reference.\n  const contentRight = patternX - w * 0.026;\n  const contentW = contentRight - contentX;\n  const columnGap = patternX - contentRight;\n\n  return {\n    pagePadding,\n    columnGap,\n    headerY,\n    patternX,\n    patternY,\n    patternW,\n    patternH,\n    singleStripW,\n    patternGap,\n    contentX,\n    contentRight,\n    contentW\n  };\n}\n\nfunction drawTicketOn(g, x, y, w, h) {\n  const layout = getTicketLayout(x, y, w, h);\n\n  g.push();\n\n  // No frame. The page edge and internal alignment create the structure.\n  g.background(255);\n  g.noStroke();\n\n  drawTicketHeaderOn(g, x, y, w, h, layout);\n  drawPatternOn(g, x, y, w, h, layout);\n  drawTicketBodyOn(g, x, y, w, h, layout);\n  drawBarcodeOn(g, x, y, w, h, layout);\n\n  g.pop();\n}\n\nfunction drawTicketHeaderOn(g, x, y, w, h, layout) {\n  const he = CONTENT.he;\n  const ar = CONTENT.ar;\n\n  g.push();\n  g.textFont(getTicketFont());\n  g.noStroke();\n  g.textStyle(BOLD);\n  g.textSize(h * 0.058);\n\n  drawBilingualRTLText(\n    g,\n    he.ticketTitle,\n    ar.ticketTitle,\n    layout.contentRight,\n    layout.headerY,\n    {\n      baseline: \"middle\",\n      offset: h * 0.0016\n    }\n  );\n\n  // The project marker is intentionally omitted from the printed face so the\n  // title keeps the same clean top spacing as the approved reference.\n  g.pop();\n}\n\nfunction getTicketFont() {\n  // A font-family string forces p5 to use the browser's native Canvas text\n  // renderer, which supports RTL ordering and Arabic contextual shaping.\n  return fontReady ? \"SimplerMono\" : \"Arial\";\n}\n\nfunction drawCanvasText(g, textValue, x, y, options) {\n  const opts = options || {};\n  const ctx = g.drawingContext;\n\n  ctx.save();\n  ctx.direction = opts.direction || \"rtl\";\n  ctx.textAlign = opts.align || \"right\";\n  ctx.textBaseline = opts.baseline || \"top\";\n  ctx.fillText(String(textValue), x, y);\n  ctx.restore();\n}\n\nfunction drawRTLText(g, textValue, x, y, baseline) {\n  drawCanvasText(g, textValue, x, y, {\n    direction: \"rtl\",\n    align: \"right\",\n    baseline: baseline || \"top\"\n  });\n}\n\nfunction drawLTRText(g, textValue, x, y, align, baseline) {\n  drawCanvasText(g, textValue, x, y, {\n    direction: \"ltr\",\n    align: align || \"left\",\n    baseline: baseline || \"top\"\n  });\n}\n\nfunction drawBilingualRTLText(g, hebrewText, arabicText, x, y, options) {\n  const opts = options || {};\n  const offset = opts.offset === undefined ? 1.5 : opts.offset;\n  const baseline = opts.baseline || \"top\";\n  const ctx = g.drawingContext;\n\n  ctx.save();\n  ctx.globalCompositeOperation = \"multiply\";\n\n  g.fill(ARABIC_TEXT_COLOR);\n  drawCanvasText(g, arabicText, x - offset, y - offset * 0.58, {\n    direction: \"rtl\",\n    align: \"right\",\n    baseline\n  });\n\n  g.fill(HEBREW_TEXT_COLOR);\n  drawCanvasText(g, hebrewText, x + offset, y + offset * 0.58, {\n    direction: \"rtl\",\n    align: \"right\",\n    baseline\n  });\n\n  ctx.restore();\n}\n\nfunction drawBilingualLines(g, hebrewLines, arabicLines, x, startY, lineHeight, offset) {\n  const ctx = g.drawingContext;\n  const shift = offset === undefined ? 1.5 : offset;\n\n  ctx.save();\n  ctx.globalCompositeOperation = \"multiply\";\n\n  g.fill(ARABIC_TEXT_COLOR);\n  for (let i = 0; i < arabicLines.length; i++) {\n    drawRTLText(g, arabicLines[i], x - shift, startY + i * lineHeight - shift * 0.58);\n  }\n\n  g.fill(HEBREW_TEXT_COLOR);\n  for (let i = 0; i < hebrewLines.length; i++) {\n    drawRTLText(g, hebrewLines[i], x + shift, startY + i * lineHeight + shift * 0.58);\n  }\n\n  ctx.restore();\n}\n\nfunction drawPatternOn(g, x, y, w, h, layout) {\n  const px = layout.patternX;\n  const py = layout.patternY;\n  const patternW = layout.patternW;\n  const patternH = layout.patternH;\n  const stripW = layout.singleStripW;\n  const stripGap = layout.patternGap;\n\n  // Two adjacent strips, each made from five exact square modules. Each module\n  // uses an 18 × 18 grid, so every colored unit remains a perfect square.\n  const medallionCount = PATTERN_BLOCK_COUNT;\n  const stripCount = PATTERN_STRIP_COUNT;\n  const cols = 18;\n  const rowsPerMedallion = 18;\n  const rows = rowsPerMedallion * medallionCount;\n  const halfCols = cols / 2;\n  const cell = stripW / cols;\n  const actualH = rows * cell;\n  const top = py + (patternH - actualH) * 0.5;\n  const medallionH = rowsPerMedallion;\n\n  const meaningLoss = answers[0];\n  const languageShift = answers[1];\n  const misreading = answers[2];\n  const belonging = answers[3];\n  const silence = answers[4];\n\n  const centerGap = Math.floor(mapValue(languageShift, 1, 5, 0, 2.2));\n  const missingCenterChance = mapValue(meaningLoss, 1, 5, 0.02, 0.42);\n  const pairDisplacementChance = mapValue(misreading, 1, 5, 0.01, 0.22);\n  const frameStrength = mapValue(belonging, 1, 5, 0.35, 0.95);\n  const silenceChance = mapValue(silence, 1, 5, 0.01, 0.25);\n\n  g.push();\n  g.noStroke();\n  g.fill(255);\n  g.rect(px, top, patternW, actualH);\n\n  for (let stripIndex = 0; stripIndex < stripCount; stripIndex++) {\n    const stripX = px + stripIndex * (stripW + stripGap);\n\n    for (let row = 0; row < rows; row++) {\n      const medallionIndex = Math.min(\n        medallionCount - 1,\n        Math.floor(row / rowsPerMedallion)\n      );\n\n      const localRow = row - medallionIndex * rowsPerMedallion;\n      const localCenterY = (medallionH - 1) * 0.5;\n      const normalizedY = Math.abs(localRow - localCenterY) / Math.max(1, localCenterY);\n\n      const motifVariant = Math.floor(\n        patternHash(201 + medallionIndex + stripIndex * 17, medallionIndex, stripIndex) * 4\n      );\n      const paletteFlip = patternHash(211 + stripIndex * 13, medallionIndex, userSeed) > 0.5;\n\n      for (let halfIndex = 0; halfIndex < halfCols; halfIndex++) {\n        const distanceFromCenter = halfCols - 1 - halfIndex;\n        if (distanceFromCenter < centerGap) continue;\n\n        const normalizedX = distanceFromCenter / Math.max(1, halfCols - 1);\n        const diamondDistance = normalizedX + normalizedY;\n        const innerDiamondDistance = normalizedX * 1.28 + normalizedY * 1.05;\n\n        const outerBandThickness = 0.075 + frameStrength * 0.035;\n        const onOuterDiamond = Math.abs(diamondDistance - 1.0) < outerBandThickness;\n        const onInnerDiamond = Math.abs(innerDiamondDistance - 0.58) < 0.075;\n\n        const centerGlyph =\n          distanceFromCenter <= 2 &&\n          Math.abs(localRow - localCenterY) <= 2.4 &&\n          ((distanceFromCenter + Math.round(localRow)) % 2 === motifVariant % 2);\n\n        const diagonalThreadA =\n          motifVariant === 0 &&\n          Math.abs(normalizedX - normalizedY * 0.72) < 0.08;\n\n        const diagonalThreadB =\n          motifVariant === 1 &&\n          Math.abs(normalizedX + normalizedY * 0.58 - 0.72) < 0.07;\n\n        const steppedThread =\n          motifVariant === 2 &&\n          ((distanceFromCenter + Math.floor(localRow)) % 4 === 0) &&\n          diamondDistance < 0.92;\n\n        const floatingMarks =\n          motifVariant === 3 &&\n          diamondDistance < 0.9 &&\n          patternHash(230 + medallionIndex + stripIndex * 19, distanceFromCenter, row) < 0.20;\n\n        let active =\n          onOuterDiamond ||\n          onInnerDiamond ||\n          centerGlyph ||\n          diagonalThreadA ||\n          diagonalThreadB ||\n          steppedThread ||\n          floatingMarks;\n\n        if (\n          !active &&\n          diamondDistance > 0.82 &&\n          diamondDistance < 1.05 &&\n          patternHash(240 + stripIndex * 7, distanceFromCenter, row) < frameStrength * 0.28\n        ) {\n          active = true;\n        }\n\n        if (!active) continue;\n\n        const centerProximity = 1 - Math.min(1, (normalizedX + normalizedY) * 0.78);\n        if (\n          centerProximity > 0.18 &&\n          patternHash(250 + stripIndex * 5, distanceFromCenter, row) < missingCenterChance * centerProximity\n        ) {\n          continue;\n        }\n\n        if (patternHash(260 + stripIndex * 11, distanceFromCenter, row) < silenceChance) continue;\n\n        let drawDistance = distanceFromCenter;\n        let drawRow = row;\n\n        if (patternHash(270 + stripIndex * 23, distanceFromCenter, row) < pairDisplacementChance) {\n          const verticalDirection =\n            patternHash(271 + stripIndex * 23, distanceFromCenter, row) < 0.5 ? -1 : 1;\n          drawRow += verticalDirection;\n\n          if (patternHash(272 + stripIndex * 23, distanceFromCenter, row) > 0.58) {\n            drawDistance += patternHash(273 + stripIndex * 23, distanceFromCenter, row) < 0.5 ? -1 : 1;\n          }\n        }\n\n        const moduleStartRow = medallionIndex * rowsPerMedallion;\n        const moduleEndRow = moduleStartRow + rowsPerMedallion - 1;\n\n        if (\n          drawDistance < centerGap ||\n          drawDistance >= halfCols ||\n          drawRow < moduleStartRow ||\n          drawRow > moduleEndRow\n        ) {\n          continue;\n        }\n\n        const leftCol = halfCols - 1 - drawDistance;\n        const rightCol = cols - 1 - leftCol;\n\n        const colorNoise = patternHash(\n          290 + medallionIndex + languageShift + stripIndex * 29,\n          distanceFromCenter,\n          row\n        );\n\n        let useRed = onOuterDiamond || centerGlyph;\n        if (paletteFlip) useRed = !useRed;\n        if (colorNoise > 0.72) useRed = !useRed;\n\n        g.fill(useRed ? RED : BLUE);\n\n        const inset = Math.max(1, cell * 0.12);\n        const squareSize = Math.max(1, cell - inset);\n        const drawY = top + drawRow * cell + inset * 0.5;\n\n        drawPatternCell(g, stripX, cell, leftCol, drawY, inset, squareSize);\n        drawPatternCell(g, stripX, cell, rightCol, drawY, inset, squareSize);\n      }\n    }\n  }\n\n  g.pop();\n}\n\nfunction drawPatternCell(g, patternX, cell, column, drawY, inset, squareSize) {\n  const drawX = patternX + column * cell + inset * 0.5;\n  const x1 = Math.round(drawX);\n  const y1 = Math.round(drawY);\n  const side = Math.max(1, Math.round(squareSize));\n  g.rect(x1, y1, side, side);\n}\n\nfunction patternHash(salt, a, b) {\n  const n = Math.sin(\n    salt * 93.173 +\n    a * 127.913 +\n    b * 311.719 +\n    patternSeed * 0.017 +\n    userSeed * 0.00031\n  ) * 43758.5453123;\n\n  return n - Math.floor(n);\n}\n\nfunction fitWrappedText(g, textValue, maxWidth, maxLines, startSize, minSize) {\n  let size = startSize;\n  let lines = [];\n\n  while (size >= minSize) {\n    g.textSize(size);\n    lines = wrapLines(g, textValue, maxWidth);\n    if (lines.length <= maxLines) break;\n    size -= 1;\n  }\n\n  return { size, lines };\n}\n\nfunction fitBilingualWrappedText(g, hebrewText, arabicText, maxWidth, maxLines, startSize, minSize) {\n  let size = startSize;\n  let hebrewLines = [];\n  let arabicLines = [];\n\n  while (size >= minSize) {\n    g.textSize(size);\n    hebrewLines = wrapLines(g, hebrewText, maxWidth);\n    arabicLines = wrapLines(g, arabicText, maxWidth);\n\n    if (hebrewLines.length <= maxLines && arabicLines.length <= maxLines) {\n      break;\n    }\n\n    size -= 1;\n  }\n\n  return { size, hebrewLines, arabicLines };\n}\n\nfunction drawMetricBlocks(g, x, y, activeCount, blockSize, gap) {\n  g.noStroke();\n\n  for (let i = 0; i < 5; i++) {\n    g.fill(i < activeCount ? ANSWER_BLOCK_COLOR : \"#d9d9d9\");\n    g.rect(x + i * (blockSize + gap), y, blockSize, blockSize);\n  }\n}\n\nfunction drawTicketBodyOn(g, x, y, w, h, layout) {\n  const he = CONTENT.he;\n  const ar = CONTENT.ar;\n  const textRight = layout.contentRight;\n  const contentW = layout.contentW;\n  const textOffset = Math.max(1.25, h * 0.00125);\n\n  g.push();\n  g.textFont(getTicketFont());\n  g.noStroke();\n\n  // Both languages are always present. Their overlap is rendered with multiply.\n  const noteY = y + h * 0.190;\n  g.textStyle(NORMAL);\n  g.textSize(h * 0.014);\n  drawBilingualRTLText(g, he.noteLabel, ar.noteLabel, textRight, noteY, {\n    offset: textOffset\n  });\n\n  const hebrewParagraph = getReflectionParagraph(\"he\");\n  const arabicParagraph = getReflectionParagraph(\"ar\");\n  const fitted = fitBilingualWrappedText(\n    g,\n    hebrewParagraph,\n    arabicParagraph,\n    contentW,\n    9,\n    h * 0.029,\n    h * 0.0225\n  );\n\n  g.textStyle(NORMAL);\n  g.textSize(fitted.size);\n  const paragraphLineH = fitted.size * 1.28;\n  const paragraphStartY = y + h * 0.210;\n  drawBilingualLines(\n    g,\n    fitted.hebrewLines,\n    fitted.arabicLines,\n    textRight,\n    paragraphStartY,\n    paragraphLineH,\n    textOffset\n  );\n\n  // Fixed row anchors preserve the exact vertical rhythm of the approved layout.\n  const rowStart = 0.490;\n  const rowEnd = 0.842;\n  const rowStep = (rowEnd - rowStart) / 4;\n  const rowAnchors = Array.from({ length: 5 }, function(_, index) {\n    return rowStart + index * rowStep;\n  });\n  const blockSize = h * 0.025;\n  const blockGap = h * 0.0095;\n  const blocksX = layout.contentX;\n  const blocksTotalW = blockSize * 5 + blockGap * 4;\n  const scoreToTextGap = w * 0.072;\n  const metricTextW = Math.max(\n    h * 0.16,\n    layout.contentRight - (blocksX + blocksTotalW + scoreToTextGap)\n  );\n\n  for (let i = 0; i < 5; i++) {\n    const rowY = y + h * rowAnchors[i];\n    const hebrewLabel = he.labels[i];\n    const arabicLabel = ar.labels[i];\n    const hebrewStatement = he.statements[i][answers[i] - 1];\n    const arabicStatement = ar.statements[i][answers[i] - 1];\n\n    drawMetricBlocks(\n      g,\n      blocksX,\n      rowY + h * 0.009,\n      answers[i],\n      blockSize,\n      blockGap\n    );\n\n    g.fill(92);\n    g.textSize(h * 0.0105);\n    g.textStyle(NORMAL);\n    drawLTRText(\n      g,\n      \"[\" + pad2(answers[i]) + \"]\",\n      blocksX,\n      rowY + blockSize + h * 0.014,\n      \"left\",\n      \"top\"\n    );\n\n    g.textStyle(BOLD);\n    g.textSize(h * 0.0212);\n    drawBilingualRTLText(\n      g,\n      hebrewLabel,\n      arabicLabel,\n      textRight,\n      rowY,\n      { offset: textOffset }\n    );\n\n    g.textStyle(NORMAL);\n    g.textSize(h * 0.0143);\n    const hebrewStatementLines = wrapLines(g, hebrewStatement, metricTextW).slice(0, 2);\n    const arabicStatementLines = wrapLines(g, arabicStatement, metricTextW).slice(0, 2);\n    drawBilingualLines(\n      g,\n      hebrewStatementLines,\n      arabicStatementLines,\n      textRight,\n      rowY + h * 0.0242,\n      h * 0.0182,\n      textOffset * 0.82\n    );\n  }\n\n  // The bilingual footer sits on the final baseline without competing with the readings.\n  const footerY = y + h * 0.952;\n  g.textStyle(NORMAL);\n  g.textSize(h * 0.0118);\n  const hebrewFooterLines = wrapLines(g, he.footerNote, contentW).slice(0, 1);\n  const arabicFooterLines = wrapLines(g, ar.footerNote, contentW).slice(0, 1);\n  drawBilingualLines(\n    g,\n    hebrewFooterLines,\n    arabicFooterLines,\n    textRight,\n    footerY,\n    h * 0.016,\n    textOffset * 0.75\n  );\n\n  g.pop();\n}\n\nfunction drawBarcodeOn(g, x, y, w, h, layout) {\n  // Kept as an empty hook. The approved landscape face has no barcode block;\n  // removing it prevents the lower-left area from becoming visually compressed.\n}\n\nfunction getReflectionParagraph(lang) {\n  const system = CONTENT[lang].reflectionSystem;\n  const average = answers.reduce((sum, value) => sum + value, 0) / answers.length;\n  const ranked = answers\n    .map((value, index) => ({ value, index }))\n    .sort((a, b) => b.value - a.value || a.index - b.index);\n\n  const topOne = ranked[0];\n  const topTwo = ranked[1];\n  const lowest = ranked.slice().sort((a, b) => a.value - b.value || a.index - b.index)[0];\n  const maximum = ranked[0].value;\n  const minimum = lowest.value;\n  const spread = maximum - minimum;\n\n  const openingBand = average <= 2.2 ? \"low\" : average >= 3.8 ? \"high\" : \"mid\";\n  const topOneBand = getReflectionScoreBand(topOne.value);\n  const topTwoBand = getReflectionScoreBand(topTwo.value);\n\n  const closingKey = spread >= 3 ? \"contrast\" : spread <= 1 ? \"even\" : \"balanced\";\n\n  const sentences = [\n    chooseReflectionText(system.opening[openingBand], 10),\n    chooseReflectionText(system.dimensions[topOne.index][topOneBand], 20 + topOne.index),\n    chooseReflectionText(system.dimensions[topTwo.index][topTwoBand], 30 + topTwo.index),\n    chooseReflectionText(system.closing[closingKey], 50)\n  ];\n\n  return sentences.filter(Boolean).join(\" \");\n}\n\nfunction getReflectionScoreBand(value) {\n  if (value <= 2) return \"low\";\n  if (value >= 4) return \"high\";\n  return \"mid\";\n}\n\nfunction chooseReflectionText(options, salt) {\n  if (!Array.isArray(options) || options.length === 0) return \"\";\n\n  const raw = Math.sin(\n    userSeed * 0.000127 +\n    patternSeed * 0.00173 +\n    salt * 41.771\n  ) * 43758.5453123;\n\n  const fraction = raw - Math.floor(raw);\n  const index = Math.min(options.length - 1, Math.floor(fraction * options.length));\n  return options[index];\n}\n\nfunction drawTextByLang(g, textValue, x, y) {\n  // Both Arabic and Hebrew are RTL languages.\n  drawRTLText(g, textValue, x, y);\n}\n\nfunction wrapLines(g, textValue, maxWidth) {\n  const words = String(textValue).trim().split(/\\s+/);\n  const lines = [];\n  const ctx = g.drawingContext;\n  let current = \"\";\n\n  ctx.save();\n  ctx.direction = \"rtl\";\n\n  for (let i = 0; i < words.length; i++) {\n    // Keep the logical word order. Native Canvas bidi rendering displays it RTL.\n    const test = current ? current + \" \" + words[i] : words[i];\n    if (ctx.measureText(test).width <= maxWidth || current === \"\") {\n      current = test;\n    } else {\n      lines.push(current);\n      current = words[i];\n    }\n  }\n\n  ctx.restore();\n  if (current) lines.push(current);\n  return lines;\n}\n\nfunction drawLines(g, lines, x, startY, lineHeight, direction) {\n  const useRTL = direction !== \"ltr\";\n  for (let i = 0; i < lines.length; i++) {\n    if (useRTL) {\n      drawRTLText(g, lines[i], x, startY + i * lineHeight);\n    } else {\n      drawLTRText(g, lines[i], x, startY + i * lineHeight, \"left\", \"top\");\n    }\n  }\n}\n\nfunction noiseHash(salt, a, b) {\n  const answerCode = answers[0] * 101 + answers[1] * 211 + answers[2] * 307 + answers[3] * 401 + answers[4] * 503 + patternSeed * 0.03;\n  const n = Math.sin(salt * 91.7 + a * 127.1 + b * 311.7 + answerCode) * 43758.5453123;\n  return n - Math.floor(n);\n}\n\nfunction mapValue(value, inMin, inMax, outMin, outMax) {\n  return outMin + (outMax - outMin) * ((value - inMin) / (inMax - inMin));\n}\n\nfunction pad2(value) {\n  return String(value).padStart(2, \"0\");\n}\n</script>\n</body>\n</html>";
+const REFLECTION_TICKET_EMBEDDED_HTML = "<!DOCTYPE html>\n<html lang=\"he\" dir=\"rtl\">\n<head>\n  <base href=\"./\" />\n  <meta charset=\"UTF-8\" />\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n  <title>My Reflection Ticket</title>\n  <script src=\"https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js\"></script>\n  <style>\n    @font-face {\n      font-family: \"SimplerMono\";\n      src: url(\"SimplerPro_HLAR_Mono-Regular 2.otf\") format(\"opentype\");\n      font-display: swap;\n    }\n\n    @font-face {\n      font-family: \"AlfaBravoMedium\";\n      src: url(\"AlfaBravo-Medium.otf\") format(\"opentype\");\n      font-style: normal;\n      font-weight: 500;\n      font-display: swap;\n    }\n\n    :root {\n      --bg: #eeeeee;\n      --line: #b5b5b5;\n      --text: #111111;\n      --muted: #6c6c6c;\n      --red: #ff1d25;\n      --blue: #00f0ff;\n      --arabic-ui: #ff3535;\n      --hebrew-ui: #2ef5ff;\n      --topbar-h: clamp(56px, 10.5vh, 100px);\n      --footer-h: clamp(44px, 5.2vh, 58px);\n      --type-ui: clamp(13px, 1.6vh, 16px);\n      --type-nav: clamp(14px, 1.9vh, 18px);\n      --type-title: clamp(30px, 4.3vh, 46px);\n      --type-body: clamp(14px, 1.8vh, 18px);\n    }\n\n    * {\n      box-sizing: border-box;\n    }\n\n    html, body {\n      margin: 0;\n      width: 100%;\n      height: 100%;\n      overflow: hidden;\n      background: var(--bg);\n      color: var(--text);\n      font-family: \"SimplerMono\", Arial, Helvetica, sans-serif;\n    }\n\n    body {\n      display: flex;\n      flex-direction: column;\n    }\n\n    #topBar {\n      height: var(--topbar-h);\n      border-bottom: 1px solid var(--line);\n      font-family: \"AlfaBravoMedium\", \"SimplerMono\", Arial, Helvetica, sans-serif;\n      font-weight: 500;\n      display: none;\n      grid-template-columns: 22% 52% 26%;\n      align-items: center;\n      gap: 0;\n      padding: 0;\n      background: var(--bg);\n      direction: ltr;\n    }\n\n    #foundStatus {\n      justify-self: start;\n      padding-left: 3.7vw;\n      display: flex;\n      align-items: center;\n      gap: 12px;\n      min-width: 0;\n      direction: ltr;\n      font-size: var(--type-ui);\n      line-height: 1;\n    }\n\n    #foundNumber {\n      width: 48px;\n      flex: 0 0 48px;\n      text-align: left;\n      direction: ltr;\n      font-variant-numeric: tabular-nums;\n    }\n\n    #foundNumber > span {\n      direction: ltr;\n      unicode-bidi: isolate;\n      text-align: left;\n    }\n\n    .overlapText {\n      display: grid;\n      position: relative;\n      min-width: 0;\n      isolation: isolate;\n    }\n\n    .overlapText > span {\n      grid-area: 1 / 1;\n      display: block;\n      direction: rtl;\n      unicode-bidi: plaintext;\n      mix-blend-mode: multiply;\n    }\n\n    /* The numeric counter must stay visibly red + cyan instead of becoming black. */\n    #foundNumber > span {\n      mix-blend-mode: normal;\n    }\n\n    .hebrewLayer {\n      color: var(--hebrew-ui);\n      transform: translate(2.1px, 1.1px);\n      opacity: 1;\n      z-index: 2;\n    }\n\n    .arabicLayer {\n      color: var(--arabic-ui);\n      transform: translate(-2.1px, -1.1px);\n      opacity: 1;\n      z-index: 1;\n    }\n\n    #foundOverlap {\n      min-width: 92px;\n      text-align: right;\n      font-size: inherit;\n      line-height: 1;\n    }\n\n    #wordNavigation {\n      justify-self: center;\n      width: 100%;\n      max-width: 650px;\n      display: flex;\n      align-items: center;\n      justify-content: center;\n      gap: clamp(8px, 1vw, 18px);\n      direction: rtl;\n      overflow: hidden;\n    }\n\n    .navWord {\n      position: relative;\n      flex: 0 0 auto;\n      min-width: 46px;\n      text-align: center;\n      font-size: var(--type-nav);\n      line-height: 1;\n      white-space: nowrap;\n    }\n\n    #projectTitle {\n      justify-self: end;\n      width: 100%;\n      padding-right: 2.6vw;\n      text-align: right;\n      font-size: var(--type-title);\n      font-weight: 500;\n      letter-spacing: -0.04em;\n      line-height: 0.9;\n      cursor: pointer;\n    }\n\n    #projectTitle .hebrewLayer,\n    #projectTitle .arabicLayer {\n      text-align: right;\n    }\n\n    #mainArea {\n      height: calc(100vh - var(--footer-h));\n      display: grid;\n      grid-template-columns: minmax(0, 2.22fr) minmax(430px, 0.78fr);\n      background: var(--bg);\n      direction: ltr;\n    }\n\n    #canvasPane,\n    #questionsPane {\n      min-width: 0;\n      min-height: 0;\n      position: relative;\n    }\n\n    #canvasPane {\n      border-right: 1px solid var(--line);\n      display: flex;\n      align-items: center;\n      justify-content: center;\n      overflow: hidden;\n    }\n\n    #canvasArea {\n      width: 100%;\n      height: 100%;\n      position: relative;\n      display: flex;\n      align-items: center;\n      justify-content: center;\n    }\n\n    #questionsPane {\n      overflow-y: hidden;\n      overflow-x: hidden;\n      direction: rtl;\n      padding: clamp(14px, 2vh, 24px) clamp(22px, 2.3vw, 44px);\n      scrollbar-width: none;\n      display: flex;\n      align-items: stretch;\n    }\n\n    #questionsPane::-webkit-scrollbar {\n      display: none;\n    }\n\n    #questionsInner {\n      width: 100%;\n      max-width: 560px;\n      height: 100%;\n      min-height: 0;\n      margin: 0 auto;\n      display: flex;\n      flex-direction: column;\n      justify-content: space-between;\n      gap: clamp(3px, 0.7vh, 8px);\n    }\n\n    .questionBlock {\n      width: 100%;\n      min-height: 0;\n      margin: 0;\n      text-align: right;\n      flex: 1 1 0;\n      display: flex;\n      flex-direction: column;\n      justify-content: center;\n    }\n\n    .questionText {\n      width: 100%;\n      min-height: 0;\n      margin-bottom: clamp(3px, 0.45vh, 7px);\n      font-size: var(--type-body);\n      line-height: 1.08;\n      font-weight: 400;\n      letter-spacing: 0;\n      text-align: right;\n    }\n\n    .questionText > span {\n      text-align: right;\n      max-width: 100%;\n    }\n\n    .sliderRow {\n      width: 100%;\n      display: flex;\n      justify-content: center;\n      align-items: center;\n      direction: ltr;\n    }\n\n    .sliderScale {\n      width: min(440px, 100%);\n      direction: ltr;\n    }\n\n    .sliderTrackWrap {\n      --fill-percent: 0%;\n      --slider-point-size: 3px;\n      --slider-thumb-size: 4px;\n      position: relative;\n      width: 100%;\n      height: 18px;\n    }\n\n    /* The dashed remainder uses the exact same centerline as the points. */\n    .sliderTrackWrap::before {\n      content: \"\";\n      position: absolute;\n      z-index: 0;\n      left: 0;\n      right: 0;\n      top: 50%;\n      height: 1px;\n      transform: translateY(-50%);\n      background: repeating-linear-gradient(\n        to right,\n        rgba(17, 17, 17, 0.20) 0,\n        rgba(17, 17, 17, 0.20) 11px,\n        transparent 11px,\n        transparent 30px\n      );\n      pointer-events: none;\n    }\n\n    /* The solid section ends at the exact center of the selected point. */\n    .sliderTrackWrap::after {\n      content: \"\";\n      position: absolute;\n      z-index: 1;\n      left: 0;\n      top: 50%;\n      width: var(--fill-percent);\n      height: 1px;\n      transform: translateY(-50%);\n      background: #111;\n      pointer-events: none;\n    }\n\n    input[type=\"range\"] {\n      -webkit-appearance: none;\n      appearance: none;\n      position: absolute;\n      z-index: 3;\n      top: 0;\n      left: calc(var(--slider-thumb-size) / -2);\n      width: calc(100% + var(--slider-thumb-size));\n      height: 100%;\n      margin: 0;\n      padding: 0;\n      background: transparent;\n      outline: none;\n      cursor: pointer;\n      touch-action: none;\n    }\n\n    input[type=\"range\"]::-webkit-slider-runnable-track {\n      height: 1px;\n      background: transparent;\n    }\n\n    input[type=\"range\"]::-webkit-slider-thumb {\n      -webkit-appearance: none;\n      appearance: none;\n      width: 4px;\n      height: 4px;\n      border-radius: 50%;\n      background: #111111;\n      border: 0;\n      margin-top: -1.5px;\n    }\n\n    input[type=\"range\"]::-moz-range-track {\n      height: 1px;\n      background: transparent;\n    }\n\n    input[type=\"range\"]::-moz-range-progress {\n      height: 1px;\n      background: transparent;\n    }\n\n    input[type=\"range\"]::-moz-range-thumb {\n      width: 4px;\n      height: 4px;\n      border-radius: 50%;\n      background: #111111;\n      border: 0;\n    }\n\n    .scaleMarkers {\n      position: absolute;\n      z-index: 2;\n      inset: 0;\n      pointer-events: none;\n    }\n\n    .scaleMarkers span {\n      position: absolute;\n      top: 50%;\n      width: var(--slider-point-size);\n      height: var(--slider-point-size);\n      border-radius: 50%;\n      background: #111;\n      transform: translate(-50%, -50%);\n    }\n\n    .scaleMarkers span:nth-child(1) { left: 0%; }\n    .scaleMarkers span:nth-child(2) { left: 25%; }\n    .scaleMarkers span:nth-child(3) { left: 50%; }\n    .scaleMarkers span:nth-child(4) { left: 75%; }\n    .scaleMarkers span:nth-child(5) { left: 100%; }\n\n    .anchorRow {\n      display: grid;\n      grid-template-columns: 1fr 1fr 1fr;\n      align-items: start;\n      margin-top: 2px;\n      direction: ltr;\n    }\n\n    .anchorItem {\n      min-width: 0;\n      font-size: clamp(8px, 1.05vh, 10px);\n      line-height: 1.06;\n      color: var(--muted);\n    }\n\n    .anchorItem:nth-child(1) { text-align: left; }\n    .anchorItem:nth-child(2) { text-align: center; }\n    .anchorItem:nth-child(3) { text-align: right; }\n\n    .anchorNumber {\n      display: block;\n      margin-bottom: 1px;\n      color: #111;\n      font-family: \"SimplerMono\", monospace;\n      font-size: clamp(7px, 0.85vh, 8px);\n      direction: ltr;\n    }\n\n    .anchorOverlap {\n      width: 100%;\n      min-height: 14px;\n      font-size: clamp(8px, 1.05vh, 10px);\n    }\n\n    .anchorOverlap > span {\n      white-space: normal;\n    }\n\n    .anchorItem:nth-child(1) .anchorOverlap > span { text-align: left; }\n    .anchorItem:nth-child(2) .anchorOverlap > span { text-align: center; }\n    .anchorItem:nth-child(3) .anchorOverlap > span { text-align: right; }\n\n    .hiddenValue {\n      display: none;\n    }\n\n    #sideLabelPane,\n    #languageTabs {\n      display: none !important;\n    }\n\n    #printButton {\n      position: absolute;\n      left: clamp(24px, 2vw, 38px);\n      bottom: clamp(20px, 2.2vh, 28px);\n      z-index: 10;\n      min-width: 118px;\n      border: 1px solid #231f20;\n      background: #231f20;\n      color: #ececec;\n      padding: 11px 22px 10px;\n      font-family: \"SimplerMono\", Arial, Helvetica, sans-serif;\n      font-size: clamp(12px, 0.85vw, 16px);\n      line-height: 1;\n      letter-spacing: 0.08em;\n      text-align: center;\n      cursor: pointer;\n      border-radius: 999px;\n    }\n\n    #printButton:hover,\n    #printButton:focus-visible {\n      background: transparent;\n      color: #231f20;\n      outline: none;\n    }\n\n    @media (min-width: 1600px) and (min-height: 850px) {\n      #questionsInner {\n        height: 100%;\n      }\n\n      .sliderScale {\n        width: min(480px, 100%);\n      }\n    }\n\n    @media (max-width: 1380px) {\n      #topBar {\n        grid-template-columns: 155px minmax(0, 1fr) 250px;\n        padding-inline: 28px;\n      }\n\n      #wordNavigation {\n        gap: clamp(8px, 1vw, 14px);\n      }\n\n      .navWord {\n        min-width: 38px;\n        font-size: 14px;\n      }\n\n      #mainArea {\n        grid-template-columns: minmax(0, 1.82fr) minmax(410px, 0.88fr);\n      }\n\n      #questionsInner {\n        min-height: 0;\n      }\n    }\n\n    @media (min-width: 1081px) and (max-height: 760px) {\n      #questionsPane {\n        padding-top: 9px;\n        padding-bottom: 9px;\n      }\n\n      #questionsInner {\n        gap: 2px;\n      }\n\n      .questionText {\n        font-size: 12px;\n        line-height: 1.04;\n        margin-bottom: 2px;\n      }\n\n      .sliderTrackWrap,\n      input[type=\"range\"] {\n        height: 15px;\n      }\n\n\n      .anchorRow {\n        margin-top: 0;\n      }\n\n      .anchorItem,\n      .anchorOverlap {\n        font-size: 7.5px;\n        line-height: 1;\n      }\n    }\n\n    @media (max-width: 1080px) {\n      html, body {\n        overflow: auto;\n      }\n\n      #topBar {\n        height: auto;\n        min-height: 104px;\n        grid-template-columns: 1fr auto;\n        gap: 14px 20px;\n        padding: 16px 24px;\n      }\n\n      #wordNavigation {\n        grid-column: 1 / -1;\n        grid-row: 2;\n        flex-wrap: wrap;\n        gap: 13px 24px;\n      }\n\n      #mainArea {\n        height: auto;\n        min-height: calc(100vh - 104px);\n        grid-template-columns: 1fr;\n        grid-template-rows: min(58vw, 56vh) auto;\n      }\n\n      #canvasPane {\n        border-right: 0;\n        border-bottom: 1px solid var(--line);\n      }\n\n      #questionsPane {\n        display: block;\n        padding: 42px 28px 60px;\n      }\n\n      #questionsInner {\n        height: auto;\n        min-height: 0;\n        display: block;\n      }\n\n      .questionBlock {\n        margin-bottom: 38px;\n      }\n    }\n\n    @media (max-width: 640px) {\n      #topBar {\n        grid-template-columns: 1fr;\n        justify-items: center;\n      }\n\n      #foundStatus,\n      #projectTitle {\n        justify-self: center;\n      }\n\n      #wordNavigation {\n        display: none;\n      }\n\n      #mainArea {\n        grid-template-rows: 44vh auto;\n      }\n\n      #questionsPane {\n        padding: 34px 20px 52px;\n      }\n\n      .questionText {\n        font-size: 16px;\n      }\n\n      .anchorItem {\n        font-size: 9px;\n      }\n    }\n\n    #sharedFooter {\n      height: var(--footer-h);\n      flex: 0 0 var(--footer-h);\n      border-top: 1px solid rgba(0,0,0,.2);\n      background: var(--bg);\n      display: flex;\n      align-items: center;\n      justify-content: space-between;\n      padding: 0 3.7vw;\n      direction: ltr;\n      font-family: \"AlfaBravoMedium\", \"SimplerMono\", monospace;\n      position: relative;\n    }\n\n    #footerActions {\n      position: absolute;\n      left: 50%;\n      top: 50%;\n      transform: translate(-50%, -50%);\n      display: flex;\n      align-items: center;\n      gap: clamp(8px, 0.6vw, 12px);\n      direction: ltr;\n    }\n\n    .footerAction {\n      width: clamp(120px, 7.8vw, 156px);\n      height: clamp(22px, 2.4vh, 28px);\n      border: 1px solid rgba(17,17,17,.62);\n      border-radius: 999px;\n      background: transparent;\n      padding: 0;\n      cursor: pointer;\n      touch-action: manipulation;\n      font-family: \"AlfaBravoMedium\", \"SimplerMono\", monospace;\n      font-size: var(--type-ui);\n      line-height: 1;\n    }\n\n    .footerAction > span {\n      align-self: center;\n      justify-self: center;\n      text-align: center;\n    }\n\n    #footerEyes { display: flex; align-items: center; gap: 14px; }\n    .footerEye {\n      width: 25px;\n      height: 25px;\n      border-radius: 50%;\n      padding: 0;\n      cursor: pointer;\n      background: transparent;\n      border: 0;\n      position: relative;\n      touch-action: manipulation;\n    }\n    .footerEye::after {\n      content: \"\";\n      position: absolute;\n      inset: 4px;\n      border-radius: 50%;\n      background: var(--eye-color);\n      opacity: 1;\n    }\n    .footerEye.isActive {\n      border: 1px dashed #111;\n    }\n    #footerCurrentWord {\n      font-size: clamp(13px, 1.7vh, 18px);\n      min-width: 120px;\n      text-align: right;\n    }\n\n    #printPage {\n      display: none;\n    }\n\n    #printTicketImage {\n      display: block;\n    }\n\n    @media print {\n      @page {\n        size: 148mm 105mm;\n        margin: 0;\n      }\n\n      html, body {\n        width: 148mm;\n        height: 105mm;\n        margin: 0 !important;\n        padding: 0 !important;\n        background: #ffffff !important;\n        overflow: hidden !important;\n      }\n\n      #topBar,\n      #mainArea,\n      #sharedFooter {\n        display: none !important;\n      }\n\n    #sharedFooter {\n      height: var(--footer-h);\n      flex: 0 0 var(--footer-h);\n      border-top: 1px solid rgba(0,0,0,.2);\n      background: var(--bg);\n      display: flex;\n      align-items: center;\n      justify-content: space-between;\n      padding: 0 3.7vw;\n      direction: ltr;\n      font-family: \"AlfaBravoMedium\", \"SimplerMono\", monospace;\n    }\n\n    #footerEyes { display: flex; align-items: center; gap: 14px; }\n    .footerEye {\n      width: 25px;\n      height: 25px;\n      border-radius: 50%;\n      padding: 0;\n      cursor: pointer;\n      background: transparent;\n      border: 0;\n      position: relative;\n      touch-action: manipulation;\n    }\n    .footerEye::after {\n      content: \"\";\n      position: absolute;\n      inset: 4px;\n      border-radius: 50%;\n      background: var(--eye-color);\n      opacity: 1;\n    }\n    .footerEye.isActive {\n      border: 1px dashed #111;\n    }\n    #footerCurrentWord {\n      font-size: clamp(13px, 1.7vh, 18px);\n      min-width: 120px;\n      text-align: right;\n    }\n\n    #printPage {\n        display: flex !important;\n        width: 148mm;\n        height: 105mm;\n        align-items: center;\n        justify-content: center;\n        background: #ffffff;\n        overflow: hidden;\n      }\n\n      #printTicketImage {\n        width: 148mm;\n        height: 105mm;\n        max-width: none;\n        max-height: none;\n        object-fit: fill;\n        image-rendering: auto;\n        display: block;\n        -webkit-print-color-adjust: exact;\n        print-color-adjust: exact;\n      }\n    }\n  </style>\n</head>\n<body>\n  <header id=\"topBar\">\n    <div id=\"foundStatus\" aria-label=\"0 מתוך 5 נמצאו / تم العثور على 0 من 5\">\n      <div id=\"foundOverlap\" class=\"overlapText\" aria-hidden=\"true\">\n        <span class=\"hebrewLayer\" lang=\"he\">נמצאו</span>\n        <span class=\"arabicLayer\" lang=\"ar\">تم العثور</span>\n      </div>\n      <div id=\"foundNumber\" class=\"overlapText\" aria-hidden=\"true\">\n        <span class=\"hebrewLayer\" lang=\"he\">5/0</span>\n        <span class=\"arabicLayer\" lang=\"ar\">5/0</span>\n      </div>\n    </div>\n\n    <nav id=\"wordNavigation\" aria-label=\"מילות הפרויקט / كلمات المشروع\">\n      <div class=\"navWord overlapText\"><span class=\"hebrewLayer\" lang=\"he\">גבול</span><span class=\"arabicLayer\" lang=\"ar\">حدود</span></div>\n      <div class=\"navWord overlapText\"><span class=\"hebrewLayer\" lang=\"he\">בית</span><span class=\"arabicLayer\" lang=\"ar\">بيت</span></div>\n      <div class=\"navWord overlapText\"><span class=\"hebrewLayer\" lang=\"he\">השתקפות</span><span class=\"arabicLayer\" lang=\"ar\">انعكاس</span></div>\n      <div class=\"navWord overlapText\"><span class=\"hebrewLayer\" lang=\"he\">זיכרון</span><span class=\"arabicLayer\" lang=\"ar\">ذاكرة</span></div>\n      <div class=\"navWord overlapText\"><span class=\"hebrewLayer\" lang=\"he\">שפה</span><span class=\"arabicLayer\" lang=\"ar\">لغة</span></div>\n    </nav>\n\n    <div id=\"projectTitle\" class=\"overlapText\" aria-label=\"ציפור מעופפת / عصفور طاير\">\n      <span id=\"titleHe\" class=\"hebrewLayer\" lang=\"he\" title=\"כרטיס בעברית\">ציפור מעופפת</span>\n      <span id=\"titleAr\" class=\"arabicLayer\" lang=\"ar\" title=\"البطاقة بالعربية\">عصفور طاير</span>\n    </div>\n  </header>\n\n  <main id=\"mainArea\">\n    <section id=\"canvasPane\">\n      <div id=\"canvasArea\"></div>\n      <button id=\"printButton\" type=\"button\" aria-label=\"Print A6 ticket\">PRINT</button>\n    </section>\n\n    <section id=\"questionsPane\">\n      <div id=\"questionsInner\"></div>\n    </section>\n\n    <aside id=\"sideLabelPane\">\n      <div class=\"sideWordWrap\">\n        <div class=\"sideWordPrimary\">انعكاس</div>\n        <div class=\"sideWordSecondary\">השתקפות</div>\n      </div>\n    </aside>\n  </main>\n\n\n  <footer id=\"sharedFooter\">\n    <div id=\"footerEyes\" aria-label=\"Select draggable color lens\">\n      <button id=\"footerArabicEye\" class=\"footerEye\" style=\"--eye-color:#ff3535\" aria-label=\"Select red lens\"></button>\n      <button id=\"footerHebrewEye\" class=\"footerEye\" style=\"--eye-color:#2ef5ff\" aria-label=\"Select cyan lens\"></button>\n    </div>\n    <div id=\"footerActions\" aria-label=\"Navigation actions\">\n      <button id=\"footerGridButton\" class=\"footerAction overlapText\" type=\"button\" aria-label=\"Return to grid\">\n        <span class=\"hebrewLayer\" lang=\"he\">הגריד</span>\n        <span class=\"arabicLayer\" lang=\"ar\">الشبكة</span>\n      </button>\n      <button id=\"footerHintButton\" class=\"footerAction overlapText\" type=\"button\" aria-label=\"Hint\">\n        <span class=\"hebrewLayer\" lang=\"he\">רמז</span>\n        <span class=\"arabicLayer\" lang=\"ar\">تلميح</span>\n      </button>\n    </div>\n    <div id=\"footerCurrentWord\" class=\"overlapText\" aria-label=\"Current word\">\n      <span class=\"hebrewLayer\" lang=\"he\">השתקפות</span>\n      <span class=\"arabicLayer\" lang=\"ar\">انعكاس</span>\n    </div>\n  </footer>\n\n  <section id=\"printPage\">\n    <img id=\"printTicketImage\" alt=\"Printed reflection ticket\" />\n  </section>\n\n<script>\nlet answers = [1, 2, 2, 2, 2];\nlet patternSeed = 24111;\nlet userSeed = 0;\nlet cnv;\nlet ticketG;\nlet ticketDirty = true;\nlet currentLang = \"he\";\nlet ticketLang = \"he\";\nlet ticketFont = null;\nlet fontReady = false;\n\nconst RED = \"#ff1d25\";\nconst BLUE = \"#00f0ff\";\nconst BLACK = \"#111111\";\nconst GRAY_BG = \"#ececec\";\nconst LIGHT_BLUE = \"#9bbbf8\";\nconst ARABIC_TEXT_COLOR = \"#ff3535\";\nconst HEBREW_TEXT_COLOR = \"#2ef5ff\";\nconst ANSWER_BLOCK_COLOR = \"#231f20\";\n\n// True A6 landscape dimensions.\n// 148 × 105 mm rendered at 300 DPI = 1748 × 1240 pixels.\nconst A6_WIDTH_MM = 148;\nconst A6_HEIGHT_MM = 105;\nconst EXPORT_DPI = 300;\nconst PRINT_W = Math.round((A6_WIDTH_MM / 25.4) * EXPORT_DPI);\nconst PRINT_H = Math.round((A6_HEIGHT_MM / 25.4) * EXPORT_DPI);\nconst PRINT_RATIO = PRINT_H / PRINT_W;\n\n// Five square pattern modules stacked vertically in each strip.\nconst PATTERN_BLOCK_COUNT = 5;\nconst PATTERN_STRIP_COUNT = 2;\n\nconst CONTENT = {\n  he: {\n    foundStatusText: \"נמצאו\",\n    questions: [\n      \"1. עד כמה המשמעות של מה שאת/ה רוצה לומר משתנה במעבר בין שפה אחת לאחרת?\",\n      \"2. עד כמה את/ה מרגיש/ה שגרסה אחרת שלך מופיעה בכל שפה?\",\n      \"3. עד כמה את/ה מרגיש/ה שאחרים מבינים אותך אחרת כשאת/ה מדבר/ת בשפה שונה?\",\n      \"4. עד כמה השפה שבה את/ה מדבר/ת משפיעה על תחושת השייכות שלך?\",\n      \"5. עד כמה יש בך דברים שאף שפה אינה מצליחה לבטא במלואם?\"\n    ],\n    scaleAnchors: [\n      { value: \"1\", text: \"כמעט בכלל לא\" },\n      { value: \"3\", text: \"לפעמים\" },\n      { value: \"5\", text: \"במידה רבה מאוד\" }\n    ],\n    ticketTitle: \"בין השפות\",\n    ticketVersion: \"פרויקט גמר 2026\",\n    reflectionLabel: \"קריאה אישית\",\n    noteLabel: \"נבנה מחמש התשובות שלך\",\n    footerNote: \"התוצאה מתארת את אופן התגובה שלך ברגע זה; היא אינה קביעה קבועה.\",\n    barcodeLabel: \"השתקפות\",\n    labels: [\n      \"מה עובר בין השפות\",\n      \"איך את/ה משתנה\",\n      \"איך אחרים מבינים אותך\",\n      \"איך השפה משפיעה על שייכות\",\n      \"מה קשה לבטא\"\n    ],\n    shortLabels: [\n      \"משמעות\",\n      \"שינוי\",\n      \"הבנה\",\n      \"שייכות\",\n      \"ביטוי\"\n    ],\n    statements: [\n      [\n        \"המילים כמעט נשארות שלמות.\",\n        \"רק מעט משתנה בדרך.\",\n        \"חלק מהכוונה מתחלף.\",\n        \"המשמעות מגיעה חלקית.\",\n        \"הרבה נשאר מאחור.\"\n      ],\n      [\n        \"אותו קול מלווה אותך.\",\n        \"הטון משתנה מעט.\",\n        \"צד אחר בך מופיע.\",\n        \"כל שפה משנה את הנוכחות שלך.\",\n        \"בכל שפה מופיעה גרסה אחרת שלך.\"\n      ],\n      [\n        \"רוב האנשים שומעים את כוונתך.\",\n        \"לפעמים משהו נקרא אחרת.\",\n        \"חלק ממך מתפספס.\",\n        \"הנחות קודמות נכנסות לשיחה.\",\n        \"את/ה נזהר/ת לפני כל משפט.\"\n      ],\n      [\n        \"השייכות נשארת יציבה.\",\n        \"הנוחות משתנה מעט.\",\n        \"המקום משנה את התחושה.\",\n        \"השפה פותחת או סוגרת מרחב.\",\n        \"השייכות תלויה באופן שבו את/ה נשמע/ת.\"\n      ],\n      [\n        \"רוב הדברים מוצאים מילים.\",\n        \"מעט נשאר בפנים.\",\n        \"יש דברים בלי ניסוח שלם.\",\n        \"הרבה נשאר שקט.\",\n        \"הדברים הכבדים ביותר נשארים בלי שם.\"\n      ]\n    ],\n    reflectionSystem: {\n      opening: {\n        low: [\n          \"את/ה עובר/ת בין השפות בלי לאבד את הכיוון שלך. הצליל משתנה, אבל מה שרצית לומר נשאר קרוב למקור.\",\n          \"המעבר בין השפות טבעי לך יחסית. המילים מתחלפות, אך הקול שמאחוריהן נשאר מוכר וברור.\"\n        ],\n        mid: [\n          \"בכל שפה הקול שלך מקבל גוון מעט אחר. את/ה מתאים/ה את המילים למקום ולאנשים, אך שומר/ת על חוט שמחבר בין הגרסאות.\",\n          \"המעבר בין השפות משנה אצלך את הקצב ואת מידת החשיפה. לא הכול משתנה, אבל בכל מרחב מופיע צד מעט אחר שלך.\"\n        ],\n        high: [\n          \"המעבר בין שפות דורש ממך בחירה מחודשת בכל פעם. חלקים מסוימים נעשים ברורים יותר, ואחרים נסוגים כדי שתוכל/י להישמע ולהיות מובן/ת.\",\n          \"בכל שפה את/ה בונה מחדש את הדרך שבה תופסים אותך. המאמץ אינו רק למצוא מילים, אלא גם לבחור מה יופיע ומה יישאר ברקע.\"\n        ]\n      },\n      dimensions: [\n        {\n          low: [\"רוב המשמעות עוברת איתך, ולכן אינך נדרש/ת לוותר על הרבה בדרך.\"],\n          mid: [\"העיקר מגיע, אך כמה גוונים דקים נשארים מאחור או מקבלים צורה אחרת.\"],\n          high: [\"מה שמגיע לאחרים הוא רק חלק ממה שהתכוונת לשאת איתך.\"]\n        },\n        {\n          low: [\"הנוכחות שלך נשארת דומה גם כשהשפה מתחלפת.\"],\n          mid: [\"כל שפה מזמינה צד מעט אחר שלך, בלי למחוק את הצדדים האחרים.\"],\n          high: [\"כל שפה מציבה אותך במקום אחר ומבליטה גרסה שונה שלך.\"]\n        },\n        {\n          low: [\"ברוב המקרים הכוונה שלך נקראת כפי שרצית.\"],\n          mid: [\"לפעמים אחרים פוגשים רק שכבה אחת, ואת/ה משלים/ה את החסר תוך כדי.\"],\n          high: [\"המבט של אחרים נכנס בין המילים ומשנה את האופן שבו שומעים אותך.\"]\n        },\n        {\n          low: [\"תחושת המקום שלך אינה תלויה מאוד בשפה שבה דיברת.\"],\n          mid: [\"הנוחות והשייכות משתנות לפי הסביבה ולפי מי שנמצא מולך.\"],\n          high: [\"השפה משפיעה על המקום שבו את/ה מרשה לעצמך להיפתח ולהרגיש חלק.\"]\n        },\n        {\n          low: [\"רוב הדברים החשובים מצליחים לקבל מילים.\"],\n          mid: [\"יש חוויות שמגיעות רק עד קצה המשפט ונשארות שם.\"],\n          high: [\"חלקים משמעותיים נשארים בלי ניסוח מלא, אך ממשיכים להיות נוכחים.\"]\n        }\n      ],\n      anchors: [\n        [\"הדיוק נשאר נקודת יציבות עבורך.\"],\n        [\"הקול שלך נשאר מוכר גם כשהמסגרת משתנה.\"],\n        [\"יש לך ביטחון יחסי באופן שבו הכוונה שלך נקלטת.\"],\n        [\"יש בך תחושת מקום שאינה תלויה רק בשפה.\"],\n        [\"כשמשהו חשוב באמת, את/ה עדיין מוצא/ת דרך לומר אותו.\"]\n      ],\n      closing: {\n        contrast: [\n          \"הפער בין התשובות מראה שלא כל מרחב דורש ממך אותו מאמץ; יש מקומות שבהם את/ה נושם/ת בחופשיות, ואחרים שבהם כל מילה נשקלת.\",\n          \"החוויה שלך משתנה מאוד לפי ההקשר. במקומות מסוימים הדברים זורמים, ובאחרים את/ה נדרש/ת לעצור, לבדוק ולבחור מחדש.\"\n        ],\n        even: [\n          \"התשובות שלך קרובות זו לזו, ולכן החוויה אינה נשלטת בידי מוקד אחד. היא נבנית מצירוף שקט של התאמות קטנות שחוזרות לאורך היום.\",\n          \"אין גורם יחיד שמוביל את התוצאה שלך. המשמעות, הקול, המבט והשייכות נעים יחד ומשפיעים זה על זה במידה דומה.\"\n        ],\n        balanced: [\n          \"שני מוקדים בולטים יותר מן האחרים, אך הם אינם מספרים את כל הסיפור. הם מצביעים על המקומות שבהם המעבר בין שפות מורגש אצלך במיוחד.\",\n          \"התוצאה שלך מאוזנת, אך שני אזורים דורשים יותר תשומת לב. שם את/ה מרגיש/ה באופן הברור ביותר את המרחק בין מה שרצית לומר לבין מה שהצליח להגיע.\"\n        ]\n      }\n    }\n  },\n  ar: {\n    foundStatusText: \"تم العثور\",\n    questions: [\n      \"1. إلى أي مدى يتغيّر معنى ما تريد/ين قوله عند الانتقال من لغة إلى أخرى؟\",\n      \"2. إلى أي مدى تشعر/ين أن نسخة أخرى منك تظهر في كل لغة؟\",\n      \"3. إلى أي مدى تشعر/ين أن الآخرين يفهمونك بشكل مختلف عندما تتحدث/ين بلغة أخرى؟\",\n      \"4. إلى أي مدى تؤثر اللغة التي تتحدث/ين بها في إحساسك بالانتماء؟\",\n      \"5. إلى أي مدى توجد فيك أشياء لا تستطيع أي لغة التعبير عنها بالكامل؟\"\n    ],\n    scaleAnchors: [\n      { value: \"1\", text: \"تقريبًا أبدًا\" },\n      { value: \"3\", text: \"أحيانًا\" },\n      { value: \"5\", text: \"إلى حد كبير جدًا\" }\n    ],\n    ticketTitle: \"بين اللغات\",\n    ticketVersion: \"مشروع تخرج 2026\",\n    reflectionLabel: \"قراءة شخصية\",\n    noteLabel: \"مبنية على إجاباتك الخمس\",\n    footerNote: \"النتيجة تصف أسلوب استجابتك في هذه اللحظة؛ وليست حكمًا ثابتًا.\",\n    barcodeLabel: \"انعكاس\",\n    labels: [\n      \"ما الذي ينتقل بين اللغات\",\n      \"كيف تتغير/ين\",\n      \"كيف يفهمك الآخرون\",\n      \"كيف تؤثر اللغة في الانتماء\",\n      \"ما الذي يصعب التعبير عنه\"\n    ],\n    shortLabels: [\n      \"معنى\",\n      \"تغيّر\",\n      \"فهم\",\n      \"انتماء\",\n      \"تعبير\"\n    ],\n    statements: [\n      [\n        \"تبقى الكلمات شبه كاملة.\",\n        \"يتغير القليل في الطريق.\",\n        \"يتبدل جزء من القصد.\",\n        \"يصل المعنى بشكل جزئي.\",\n        \"يبقى الكثير خلفك.\"\n      ],\n      [\n        \"يرافقك الصوت نفسه.\",\n        \"تتغير النبرة قليلًا.\",\n        \"يظهر جانب آخر منك.\",\n        \"كل لغة تغيّر حضورك.\",\n        \"في كل لغة تظهر نسخة أخرى منك.\"\n      ],\n      [\n        \"غالبًا يسمع الآخرون قصدك.\",\n        \"أحيانًا يُقرأ شيء بشكل آخر.\",\n        \"يضيع جزء منك في الفهم.\",\n        \"تدخل الافتراضات إلى الحديث.\",\n        \"تتأنى قبل كل جملة.\"\n      ],\n      [\n        \"يبقى انتماؤك ثابتًا.\",\n        \"تتغير الراحة قليلًا.\",\n        \"يغيّر المكان الإحساس.\",\n        \"تفتح اللغة مساحة أو تغلقها.\",\n        \"يتعلق الانتماء بالطريقة التي تُسمع بها.\"\n      ],\n      [\n        \"تجد معظم الأشياء كلماتها.\",\n        \"يبقى القليل في الداخل.\",\n        \"هناك أمور بلا صياغة كاملة.\",\n        \"يبقى الكثير صامتًا.\",\n        \"أثقل ما فيك يبقى أحيانًا بلا اسم.\"\n      ]\n    ],\n    reflectionSystem: {\n      opening: {\n        low: [\n          \"تتنقل/ين بين اللغات من دون أن تفقد/ي اتجاهك. يتغيّر الصوت، لكن ما أردت قوله يبقى قريبًا من أصله.\",\n          \"الانتقال بين اللغات طبيعي لديك نسبيًا. تتبدل الكلمات، لكن الصوت الذي خلفها يبقى مألوفًا وواضحًا.\"\n        ],\n        mid: [\n          \"في كل لغة يكتسب صوتك نبرة مختلفة قليلًا. تعدّل/ين الكلمات بحسب المكان ومن أمامك، لكنك تحافظ/ين على خيط يصل بين النسخ المختلفة.\",\n          \"الانتقال بين اللغات يغيّر الإيقاع ودرجة انكشافك. لا يتغير كل شيء، لكن جانبًا مختلفًا منك يظهر في كل مساحة.\"\n        ],\n        high: [\n          \"الانتقال بين اللغات يطلب منك اختيارًا جديدًا في كل مرة. تصبح بعض الجوانب أوضح، وتتراجع أخرى كي تتمكن/ي من أن تُسمع/ي وأن تُفهم/ي.\",\n          \"في كل لغة تعيد/ين بناء الطريقة التي يراك بها الآخرون. الجهد ليس في إيجاد الكلمات فقط، بل في اختيار ما سيظهر وما سيبقى في الخلف.\"\n        ]\n      },\n      dimensions: [\n        {\n          low: [\"يصل معظم المعنى معك، لذلك لا تضطر/ين إلى ترك الكثير في الطريق.\"],\n          mid: [\"يصل الأساس، لكن بعض التفاصيل الدقيقة تبقى خلفك أو تأخذ شكلًا آخر.\"],\n          high: [\"ما يصل إلى الآخرين ليس إلا جزءًا مما أردت حمله معك.\"]\n        },\n        {\n          low: [\"يبقى حضورك قريبًا من نفسه حتى عندما تتبدل اللغة.\"],\n          mid: [\"تدعو كل لغة جانبًا مختلفًا قليلًا منك، من دون أن تمحو الجوانب الأخرى.\"],\n          high: [\"تضعك كل لغة في موقع مختلف وتبرز نسخة أخرى منك.\"]\n        },\n        {\n          low: [\"في معظم الأحيان يُفهم قصدك كما أردت.\"],\n          mid: [\"أحيانًا يرى الآخرون طبقة واحدة فقط، فتكمّل/ين ما ينقص أثناء الحديث.\"],\n          high: [\"تدخل نظرة الآخرين بين الكلمات وتغيّر الطريقة التي يُسمع بها صوتك.\"]\n        },\n        {\n          low: [\"إحساسك بالمكان لا يعتمد كثيرًا على اللغة التي تتحدث/ين بها.\"],\n          mid: [\"تتبدل الراحة والانتماء بحسب المحيط وبحسب من يقف أمامك.\"],\n          high: [\"تؤثر اللغة في المكان الذي تسمح/ين فيه لنفسك بالانفتاح والشعور بأنك جزء منه.\"]\n        },\n        {\n          low: [\"تنجح معظم الأمور المهمة في العثور على كلماتها.\"],\n          mid: [\"هناك تجارب تصل إلى حافة الجملة ثم تبقى هناك.\"],\n          high: [\"تبقى أجزاء مهمة من دون صياغة كاملة، لكنها تظل حاضرة فيك.\"]\n        }\n      ],\n      anchors: [\n        [\"تبقى الدقة نقطة ثبات لديك.\"],\n        [\"يبقى صوتك مألوفًا حتى عندما يتغير الإطار.\"],\n        [\"لديك ثقة نسبية في الطريقة التي يصل بها قصدك.\"],\n        [\"لديك إحساس بالمكان لا يعتمد على اللغة وحدها.\"],\n        [\"عندما يكون الأمر مهمًا، تجد/ين طريقة لقول ما تريد/ين.\"]\n      ],\n      closing: {\n        contrast: [\n          \"الفارق بين الإجابات يبيّن أن كل مساحة لا تطلب منك الجهد نفسه؛ في أماكن تتنفس/ين بحرية، وفي أخرى تزن/ين كل كلمة.\",\n          \"تتغير تجربتك كثيرًا بحسب السياق. في بعض الأماكن تسير الأمور بسهولة، وفي أخرى تتوقف/ين لتراجع/ي وتختار/ي من جديد.\"\n        ],\n        even: [\n          \"إجاباتك متقاربة، لذلك لا يسيطر محور واحد على تجربتك. تتكوّن النتيجة من مجموعة هادئة من التعديلات الصغيرة التي تتكرر خلال اليوم.\",\n          \"لا يوجد عامل واحد يقود نتيجتك. المعنى والصوت ونظرة الآخرين والانتماء تتحرك معًا وتؤثر في بعضها بدرجات متقاربة.\"\n        ],\n        balanced: [\n          \"يظهر محوران أكثر من غيرهما، لكنهما لا يرويان القصة كاملة. إنهما يشيران إلى الأماكن التي تشعر/ين فيها بوضوح أكبر بالانتقال بين اللغات.\",\n          \"نتيجتك متوازنة، لكن جانبين يحتاجان إلى انتباه أكبر. هناك تشعر/ين بوضوح بالمسافة بين ما أردت قوله وما استطاع الوصول.\"\n        ]\n      }\n    }\n  }\n};\n\nfunction setup() {\n  const area = document.getElementById(\"canvasArea\");\n  cnv = createCanvas(area.clientWidth, area.clientHeight);\n  cnv.parent(\"canvasArea\");\n  pixelDensity(1);\n  noSmooth();\n  imageMode(CORNER);\n\n  ticketG = createGraphics(PRINT_W, PRINT_H);\n  ticketG.pixelDensity(1);\n  ticketG.noSmooth();\n\n  // One random identity seed per visitor. It stays stable while that visitor\n  // changes answers during the current session.\n  userSeed = generateUserSeed();\n\n  setupQuestionsUI();\n  setupLanguageTabs();\n  setupPrintControl();\n  setupSharedFooterControls();\n  updateLanguageUI();\n  tryLoadFont();\n  markTicketDirty();\n}\n\nfunction tryLoadFont() {\n  // Use the CSS @font-face instead of p5.loadFont(). p5.Font draws glyph paths\n  // in source order and does not reliably apply Arabic/Hebrew bidi shaping.\n  // Native Canvas text with direction=\"rtl\" keeps letters connected and ordered.\n  if (document.fonts && document.fonts.load) {\n    document.fonts\n      .load('32px \"SimplerMono\"')\n      .then(function() {\n        fontReady = true;\n        markTicketDirty();\n      })\n      .catch(function() {\n        console.warn(\"Could not load SimplerPro_HLAR_Mono-Regular 2.otf. Falling back to Arial.\");\n        fontReady = false;\n        markTicketDirty();\n      });\n  } else {\n    fontReady = false;\n    markTicketDirty();\n  }\n}\n\nfunction draw() {\n  background(GRAY_BG);\n  if (ticketDirty) {\n    renderHighResolutionTicket();\n  }\n  drawTicketPreview();\n}\n\nfunction setupLanguageTabs() {\n  const projectTitle = document.getElementById(\"projectTitle\");\n  if (projectTitle) {\n    projectTitle.addEventListener(\"click\", function(event) {\n      event.preventDefault();\n      event.stopPropagation();\n      if (window.parent && window.parent !== window && typeof window.parent.closeReflectionTicket === \"function\") {\n        window.parent.closeReflectionTicket();\n        if (typeof window.parent.returnToMainGridFromNavigation === \"function\") {\n          window.parent.returnToMainGridFromNavigation();\n        }\n      }\n    });\n  }\n}\n\nfunction updateLanguageUI() {\n  ticketLang = currentLang;\n  document.body.dataset.ticketLanguage = currentLang;\n  markTicketDirty();\n}\n\nfunction renderQuestions() {\n  const panel = document.getElementById(\"questionsInner\");\n  const hebrewQuestions = CONTENT.he.questions;\n  const arabicQuestions = CONTENT.ar.questions;\n  const hebrewAnchors = CONTENT.he.scaleAnchors;\n  const arabicAnchors = CONTENT.ar.scaleAnchors;\n  panel.innerHTML = \"\";\n\n  for (let i = 0; i < hebrewQuestions.length; i++) {\n    const block = document.createElement(\"section\");\n    block.className = \"questionBlock\";\n    block.setAttribute(\"aria-labelledby\", \"question-he-\" + (i + 1));\n\n    const qText = document.createElement(\"div\");\n    qText.className = \"questionText overlapText\";\n\n    const qHe = document.createElement(\"span\");\n    qHe.className = \"hebrewLayer\";\n    qHe.lang = \"he\";\n    qHe.id = \"question-he-\" + (i + 1);\n    qHe.textContent = hebrewQuestions[i];\n\n    const qAr = document.createElement(\"span\");\n    qAr.className = \"arabicLayer\";\n    qAr.lang = \"ar\";\n    qAr.textContent = arabicQuestions[i];\n\n    qText.appendChild(qHe);\n    qText.appendChild(qAr);\n\n    const row = document.createElement(\"div\");\n    row.className = \"sliderRow\";\n\n    const scale = document.createElement(\"div\");\n    scale.className = \"sliderScale\";\n\n    const trackWrap = document.createElement(\"div\");\n    trackWrap.className = \"sliderTrackWrap\";\n\n    const slider = document.createElement(\"input\");\n    slider.type = \"range\";\n    slider.min = \"1\";\n    slider.max = \"5\";\n    slider.step = \"1\";\n    slider.value = String(answers[i]);\n    slider.id = \"q\" + (i + 1);\n    slider.setAttribute(\"aria-label\", hebrewQuestions[i] + \" / \" + arabicQuestions[i]);\n    slider.setAttribute(\"aria-valuetext\", String(answers[i]));\n\n    const markers = document.createElement(\"div\");\n    markers.className = \"scaleMarkers\";\n    markers.setAttribute(\"aria-hidden\", \"true\");\n    for (let markerIndex = 0; markerIndex < 5; markerIndex++) {\n      markers.appendChild(document.createElement(\"span\"));\n    }\n\n    const anchorRow = document.createElement(\"div\");\n    anchorRow.className = \"anchorRow\";\n\n    for (let anchorIndex = 0; anchorIndex < 3; anchorIndex++) {\n      const anchorItem = document.createElement(\"div\");\n      anchorItem.className = \"anchorItem\";\n\n      const anchorNumber = document.createElement(\"span\");\n      anchorNumber.className = \"anchorNumber\";\n      anchorNumber.textContent = hebrewAnchors[anchorIndex].value;\n\n      const anchorOverlap = document.createElement(\"div\");\n      anchorOverlap.className = \"anchorOverlap overlapText\";\n\n      const anchorHe = document.createElement(\"span\");\n      anchorHe.className = \"hebrewLayer\";\n      anchorHe.lang = \"he\";\n      anchorHe.textContent = hebrewAnchors[anchorIndex].text;\n\n      const anchorAr = document.createElement(\"span\");\n      anchorAr.className = \"arabicLayer\";\n      anchorAr.lang = \"ar\";\n      anchorAr.textContent = arabicAnchors[anchorIndex].text;\n\n      anchorOverlap.appendChild(anchorHe);\n      anchorOverlap.appendChild(anchorAr);\n      anchorItem.appendChild(anchorNumber);\n      anchorItem.appendChild(anchorOverlap);\n      anchorRow.appendChild(anchorItem);\n    }\n\n    const value = document.createElement(\"div\");\n    value.className = \"hiddenValue\";\n    value.id = \"v\" + (i + 1);\n    value.textContent = String(answers[i]);\n\n    updateSliderFill(slider, trackWrap);\n\n    slider.addEventListener(\"input\", function() {\n      answers[i] = Number(slider.value);\n      value.textContent = slider.value;\n      slider.setAttribute(\"aria-valuetext\", slider.value);\n      updateSliderFill(slider, trackWrap);\n      markTicketDirty();\n    });\n\n    trackWrap.appendChild(markers);\n    trackWrap.appendChild(slider);\n    scale.appendChild(trackWrap);\n    scale.appendChild(anchorRow);\n    row.appendChild(scale);\n\n    block.appendChild(qText);\n    block.appendChild(row);\n    block.appendChild(value);\n    panel.appendChild(block);\n  }\n}\n\nfunction updateSliderFill(slider, trackWrap) {\n  const min = Number(slider.min || 0);\n  const max = Number(slider.max || 100);\n  const value = Number(slider.value);\n  const percentage = max === min ? 0 : ((value - min) / (max - min)) * 100;\n  trackWrap.style.setProperty(\"--fill-percent\", percentage + \"%\");\n}\n\nfunction setupQuestionsUI() {\n  renderQuestions();\n}\n\nfunction markTicketDirty() {\n  patternSeed = makeSeedFromAnswers();\n  ticketDirty = true;\n}\n\nfunction generateUserSeed() {\n  // crypto gives different visitors different patterns even when their answers match.\n  if (window.crypto && window.crypto.getRandomValues) {\n    const values = new Uint32Array(1);\n    window.crypto.getRandomValues(values);\n    return values[0] % 900000 + 100000;\n  }\n\n  return Math.floor((Date.now() + Math.random() * 1000000) % 900000) + 100000;\n}\n\nfunction makeSeedFromAnswers() {\n  const answerSeed =\n    answers[0] * 101 +\n    answers[1] * 1009 +\n    answers[2] * 2017 +\n    answers[3] * 3011 +\n    answers[4] * 4001;\n\n  // Keep the visitor-specific seed and answer structure in the same deterministic code.\n  return Math.abs((userSeed * 37 + answerSeed * 97) % 100000000);\n}\n\nfunction windowResized() {\n  const area = document.getElementById(\"canvasArea\");\n  resizeCanvas(area.clientWidth, area.clientHeight);\n}\n\nfunction setupPrintControl() {\n  const printButton = document.getElementById(\"printButton\");\n\n  if (printButton) {\n    printButton.addEventListener(\"click\", finishAndPrint);\n  }\n\n  // Global listener works even while a slider or another control has focus.\n  window.addEventListener(\"keydown\", function(event) {\n    if (\n      event.key.toLowerCase() === \"p\" &&\n      !event.ctrlKey &&\n      !event.metaKey &&\n      !event.altKey\n    ) {\n      event.preventDefault();\n      finishAndPrint();\n    }\n  });\n}\n\n\nfunction setupSharedFooterControls() {\n  const arEye = document.getElementById(\"footerArabicEye\");\n  const heEye = document.getElementById(\"footerHebrewEye\");\n\n  if (arEye) arEye.addEventListener(\"click\", function() {\n    if (window.parent && window.parent !== window && typeof window.parent.selectPagmarLens === \"function\") {\n      window.parent.selectPagmarLens(\"red\");\n    }\n  });\n\n  if (heEye) heEye.addEventListener(\"click\", function() {\n    if (window.parent && window.parent !== window && typeof window.parent.selectPagmarLens === \"function\") {\n      window.parent.selectPagmarLens(\"cyan\");\n    }\n  });\n}\n\nfunction drawTicketPreview() {\n  const maxW = Math.min(width * 0.92, 1020);\n  const fitByWidth = width * 0.78;\n  const fitByHeight = height * 0.86 / PRINT_RATIO;\n\n  let previewW = Math.min(fitByWidth, fitByHeight, maxW);\n  previewW = Math.max(270, previewW);\n\n  const previewH = previewW * PRINT_RATIO;\n  const x = width / 2 - previewW / 2;\n  const y = height / 2 - previewH / 2;\n\n  image(ticketG, x, y, previewW, previewH);\n}\n\nfunction finishAndPrint() {\n  renderHighResolutionTicket();\n\n  const canvasForExport = ticketG.canvas || ticketG.elt;\n  const dataUrl = canvasForExport.toDataURL(\"image/png\");\n\n  // Use a dedicated print window with a strict A6 landscape page definition.\n  // This is more reliable than trying to print the interactive UI page itself.\n  const printWindow = window.open(\"\", \"reflectionTicketPrint\", \"width=900,height=700\");\n\n  if (!printWindow) {\n    alert(\"Please allow pop-ups so the A6 print window can open.\");\n    return;\n  }\n\n  const printHtml = `<!DOCTYPE html>\n<html>\n<head>\n  <meta charset=\"UTF-8\" />\n  <title>Print A6 Ticket</title>\n  <style>\n    @page {\n      size: 148mm 105mm;\n      margin: 0;\n    }\n    html, body {\n      margin: 0;\n      padding: 0;\n      width: 148mm;\n      height: 105mm;\n      overflow: hidden;\n      background: #ffffff;\n    }\n    body {\n      display: flex;\n      align-items: center;\n      justify-content: center;\n    }\n    img {\n      display: block;\n      width: 148mm;\n      height: 105mm;\n      object-fit: fill;\n      image-rendering: auto;\n      -webkit-print-color-adjust: exact;\n      print-color-adjust: exact;\n    }\n  </style>\n</head>\n<body>\n  <img id=\"ticketImage\" src=\"${dataUrl}\" alt=\"A6 ticket\" />\n  <script>\n    const img = document.getElementById(\"ticketImage\");\n    function runPrint() {\n      setTimeout(function() {\n        window.focus();\n        window.print();\n      }, 80);\n    }\n    if (img.complete) {\n      runPrint();\n    } else {\n      img.onload = runPrint;\n    }\n    window.onafterprint = function() { window.close(); };\n  <\\/script>\n</body>\n</html>`;\n\n  printWindow.document.open();\n  printWindow.document.write(printHtml);\n  printWindow.document.close();\n}\n\nfunction saveHighResTicketPNG() {\n  renderHighResolutionTicket();\n\n  const canvasForExport = ticketG.canvas || ticketG.elt;\n\n  canvasToPngBlobWithDpi(canvasForExport, EXPORT_DPI)\n    .then(function(blob) {\n      const link = document.createElement(\"a\");\n      const url = URL.createObjectURL(blob);\n\n      link.download =\n        \"my_reflection_A6_landscape_300dpi_\" + patternSeed + \".png\";\n      link.href = url;\n      document.body.appendChild(link);\n      link.click();\n      link.remove();\n\n      setTimeout(function() {\n        URL.revokeObjectURL(url);\n      }, 1000);\n    })\n    .catch(function(error) {\n      console.error(\"Could not save the A6 PNG with DPI metadata:\", error);\n\n      // Safe fallback: the pixel dimensions are still exact A6 at 300 DPI.\n      const link = document.createElement(\"a\");\n      link.download =\n        \"my_reflection_A6_landscape_1748x1240_\" + patternSeed + \".png\";\n      link.href = canvasForExport.toDataURL(\"image/png\");\n      link.click();\n    });\n}\n\n/**\n * Exports the canvas as a PNG and inserts a pHYs chunk so design/print\n * applications recognize the file as 300 DPI, not merely as a pixel image.\n */\nasync function canvasToPngBlobWithDpi(canvasElement, dpi) {\n  const originalBlob = await new Promise(function(resolve, reject) {\n    canvasElement.toBlob(function(blob) {\n      if (blob) resolve(blob);\n      else reject(new Error(\"Canvas PNG export returned no data.\"));\n    }, \"image/png\");\n  });\n\n  const originalBytes = new Uint8Array(await originalBlob.arrayBuffer());\n  const pngBytes = insertPngPhysicalResolution(originalBytes, dpi);\n\n  return new Blob([pngBytes], { type: \"image/png\" });\n}\n\nfunction insertPngPhysicalResolution(pngBytes, dpi) {\n  const PNG_SIGNATURE_LENGTH = 8;\n  const IHDR_TOTAL_LENGTH = 25; // 4 length + 4 type + 13 data + 4 CRC\n  const insertAt = PNG_SIGNATURE_LENGTH + IHDR_TOTAL_LENGTH;\n  const pixelsPerMeter = Math.round(dpi / 0.0254);\n\n  const data = new Uint8Array(9);\n  writeUint32BE(data, 0, pixelsPerMeter);\n  writeUint32BE(data, 4, pixelsPerMeter);\n  data[8] = 1; // Unit specifier: metres\n\n  const type = new Uint8Array([112, 72, 89, 115]); // \"pHYs\"\n  const chunk = new Uint8Array(4 + 4 + data.length + 4);\n\n  writeUint32BE(chunk, 0, data.length);\n  chunk.set(type, 4);\n  chunk.set(data, 8);\n\n  const crcInput = new Uint8Array(type.length + data.length);\n  crcInput.set(type, 0);\n  crcInput.set(data, type.length);\n  writeUint32BE(chunk, 8 + data.length, crc32(crcInput));\n\n  const output = new Uint8Array(pngBytes.length + chunk.length);\n  output.set(pngBytes.slice(0, insertAt), 0);\n  output.set(chunk, insertAt);\n  output.set(pngBytes.slice(insertAt), insertAt + chunk.length);\n\n  return output;\n}\n\nfunction writeUint32BE(bytes, offset, value) {\n  bytes[offset] = (value >>> 24) & 255;\n  bytes[offset + 1] = (value >>> 16) & 255;\n  bytes[offset + 2] = (value >>> 8) & 255;\n  bytes[offset + 3] = value & 255;\n}\n\nfunction crc32(bytes) {\n  let crc = 0xffffffff;\n\n  for (let i = 0; i < bytes.length; i++) {\n    crc ^= bytes[i];\n\n    for (let bit = 0; bit < 8; bit++) {\n      const mask = -(crc & 1);\n      crc = (crc >>> 1) ^ (0xedb88320 & mask);\n    }\n  }\n\n  return (crc ^ 0xffffffff) >>> 0;\n}\n\nfunction resetAnswers() {\n  ticketLang = currentLang;\n  answers = [1, 2, 2, 2, 2];\n\n  // RESET means a new visitor, so the same answer set does not repeat the previous pattern.\n  userSeed = generateUserSeed();\n\n  renderQuestions();\n  markTicketDirty();\n}\n\nfunction renderHighResolutionTicket() {\n  ticketG.clear();\n  ticketG.background(255);\n  ticketG.noSmooth();\n  drawTicketOn(ticketG, 0, 0, PRINT_W, PRINT_H);\n  ticketDirty = false;\n}\n\nfunction getTicketLayout(x, y, w, h) {\n  // Exact landscape proportions taken from the approved reference layout.\n  // The pattern nearly bleeds on three sides; the text has a compact left margin.\n  const pagePadding = w * 0.024;\n  const headerY = y + h * 0.079;\n\n  const patternY = y + h * 0.009;\n  const patternH = h * 0.974;\n\n  // The pattern area is made from two adjacent square strips. Each strip holds\n  // five square modules stacked vertically, matching the approved reference.\n  const singleStripW = patternH / PATTERN_BLOCK_COUNT;\n  const patternGap = Math.max(0, w * 0.0008);\n  const patternW = singleStripW * PATTERN_STRIP_COUNT + patternGap * (PATTERN_STRIP_COUNT - 1);\n  const patternRight = x + w * 0.992;\n  const patternX = patternRight - patternW;\n\n  const contentX = x + w * 0.024;\n  // Keep the text block closer to the pattern, following the approved reference.\n  const contentRight = patternX - w * 0.026;\n  const contentW = contentRight - contentX;\n  const columnGap = patternX - contentRight;\n\n  return {\n    pagePadding,\n    columnGap,\n    headerY,\n    patternX,\n    patternY,\n    patternW,\n    patternH,\n    singleStripW,\n    patternGap,\n    contentX,\n    contentRight,\n    contentW\n  };\n}\n\nfunction drawTicketOn(g, x, y, w, h) {\n  const layout = getTicketLayout(x, y, w, h);\n\n  g.push();\n\n  // No frame. The page edge and internal alignment create the structure.\n  g.background(255);\n  g.noStroke();\n\n  drawTicketHeaderOn(g, x, y, w, h, layout);\n  drawPatternOn(g, x, y, w, h, layout);\n  drawTicketBodyOn(g, x, y, w, h, layout);\n  drawBarcodeOn(g, x, y, w, h, layout);\n\n  g.pop();\n}\n\nfunction drawTicketHeaderOn(g, x, y, w, h, layout) {\n  const he = CONTENT.he;\n  const ar = CONTENT.ar;\n\n  g.push();\n  g.textFont(getTicketFont());\n  g.noStroke();\n  g.textStyle(BOLD);\n  g.textSize(h * 0.058);\n\n  drawBilingualRTLText(\n    g,\n    he.ticketTitle,\n    ar.ticketTitle,\n    layout.contentRight,\n    layout.headerY,\n    {\n      baseline: \"middle\",\n      offset: h * 0.0016\n    }\n  );\n\n  // The project marker is intentionally omitted from the printed face so the\n  // title keeps the same clean top spacing as the approved reference.\n  g.pop();\n}\n\nfunction getTicketFont() {\n  // A font-family string forces p5 to use the browser's native Canvas text\n  // renderer, which supports RTL ordering and Arabic contextual shaping.\n  return fontReady ? \"SimplerMono\" : \"Arial\";\n}\n\nfunction drawCanvasText(g, textValue, x, y, options) {\n  const opts = options || {};\n  const ctx = g.drawingContext;\n\n  ctx.save();\n  ctx.direction = opts.direction || \"rtl\";\n  ctx.textAlign = opts.align || \"right\";\n  ctx.textBaseline = opts.baseline || \"top\";\n  ctx.fillText(String(textValue), x, y);\n  ctx.restore();\n}\n\nfunction drawRTLText(g, textValue, x, y, baseline) {\n  drawCanvasText(g, textValue, x, y, {\n    direction: \"rtl\",\n    align: \"right\",\n    baseline: baseline || \"top\"\n  });\n}\n\nfunction drawLTRText(g, textValue, x, y, align, baseline) {\n  drawCanvasText(g, textValue, x, y, {\n    direction: \"ltr\",\n    align: align || \"left\",\n    baseline: baseline || \"top\"\n  });\n}\n\nfunction drawBilingualRTLText(g, hebrewText, arabicText, x, y, options) {\n  const opts = options || {};\n  const offset = opts.offset === undefined ? 1.5 : opts.offset;\n  const baseline = opts.baseline || \"top\";\n  const ctx = g.drawingContext;\n\n  ctx.save();\n  ctx.globalCompositeOperation = \"multiply\";\n\n  g.fill(ARABIC_TEXT_COLOR);\n  drawCanvasText(g, arabicText, x - offset, y - offset * 0.58, {\n    direction: \"rtl\",\n    align: \"right\",\n    baseline\n  });\n\n  g.fill(HEBREW_TEXT_COLOR);\n  drawCanvasText(g, hebrewText, x + offset, y + offset * 0.58, {\n    direction: \"rtl\",\n    align: \"right\",\n    baseline\n  });\n\n  ctx.restore();\n}\n\nfunction drawBilingualLines(g, hebrewLines, arabicLines, x, startY, lineHeight, offset) {\n  const ctx = g.drawingContext;\n  const shift = offset === undefined ? 1.5 : offset;\n\n  ctx.save();\n  ctx.globalCompositeOperation = \"multiply\";\n\n  g.fill(ARABIC_TEXT_COLOR);\n  for (let i = 0; i < arabicLines.length; i++) {\n    drawRTLText(g, arabicLines[i], x - shift, startY + i * lineHeight - shift * 0.58);\n  }\n\n  g.fill(HEBREW_TEXT_COLOR);\n  for (let i = 0; i < hebrewLines.length; i++) {\n    drawRTLText(g, hebrewLines[i], x + shift, startY + i * lineHeight + shift * 0.58);\n  }\n\n  ctx.restore();\n}\n\nfunction drawPatternOn(g, x, y, w, h, layout) {\n  const px = layout.patternX;\n  const py = layout.patternY;\n  const patternW = layout.patternW;\n  const patternH = layout.patternH;\n  const stripW = layout.singleStripW;\n  const stripGap = layout.patternGap;\n\n  // Two adjacent strips, each made from five exact square modules. Each module\n  // uses an 18 × 18 grid, so every colored unit remains a perfect square.\n  const medallionCount = PATTERN_BLOCK_COUNT;\n  const stripCount = PATTERN_STRIP_COUNT;\n  const cols = 18;\n  const rowsPerMedallion = 18;\n  const rows = rowsPerMedallion * medallionCount;\n  const halfCols = cols / 2;\n  const cell = stripW / cols;\n  const actualH = rows * cell;\n  const top = py + (patternH - actualH) * 0.5;\n  const medallionH = rowsPerMedallion;\n\n  const meaningLoss = answers[0];\n  const languageShift = answers[1];\n  const misreading = answers[2];\n  const belonging = answers[3];\n  const silence = answers[4];\n\n  const centerGap = Math.floor(mapValue(languageShift, 1, 5, 0, 2.2));\n  const missingCenterChance = mapValue(meaningLoss, 1, 5, 0.02, 0.42);\n  const pairDisplacementChance = mapValue(misreading, 1, 5, 0.01, 0.22);\n  const frameStrength = mapValue(belonging, 1, 5, 0.35, 0.95);\n  const silenceChance = mapValue(silence, 1, 5, 0.01, 0.25);\n\n  g.push();\n  g.noStroke();\n  g.fill(255);\n  g.rect(px, top, patternW, actualH);\n\n  for (let stripIndex = 0; stripIndex < stripCount; stripIndex++) {\n    const stripX = px + stripIndex * (stripW + stripGap);\n\n    for (let row = 0; row < rows; row++) {\n      const medallionIndex = Math.min(\n        medallionCount - 1,\n        Math.floor(row / rowsPerMedallion)\n      );\n\n      const localRow = row - medallionIndex * rowsPerMedallion;\n      const localCenterY = (medallionH - 1) * 0.5;\n      const normalizedY = Math.abs(localRow - localCenterY) / Math.max(1, localCenterY);\n\n      const motifVariant = Math.floor(\n        patternHash(201 + medallionIndex + stripIndex * 17, medallionIndex, stripIndex) * 4\n      );\n      const paletteFlip = patternHash(211 + stripIndex * 13, medallionIndex, userSeed) > 0.5;\n\n      for (let halfIndex = 0; halfIndex < halfCols; halfIndex++) {\n        const distanceFromCenter = halfCols - 1 - halfIndex;\n        if (distanceFromCenter < centerGap) continue;\n\n        const normalizedX = distanceFromCenter / Math.max(1, halfCols - 1);\n        const diamondDistance = normalizedX + normalizedY;\n        const innerDiamondDistance = normalizedX * 1.28 + normalizedY * 1.05;\n\n        const outerBandThickness = 0.075 + frameStrength * 0.035;\n        const onOuterDiamond = Math.abs(diamondDistance - 1.0) < outerBandThickness;\n        const onInnerDiamond = Math.abs(innerDiamondDistance - 0.58) < 0.075;\n\n        const centerGlyph =\n          distanceFromCenter <= 2 &&\n          Math.abs(localRow - localCenterY) <= 2.4 &&\n          ((distanceFromCenter + Math.round(localRow)) % 2 === motifVariant % 2);\n\n        const diagonalThreadA =\n          motifVariant === 0 &&\n          Math.abs(normalizedX - normalizedY * 0.72) < 0.08;\n\n        const diagonalThreadB =\n          motifVariant === 1 &&\n          Math.abs(normalizedX + normalizedY * 0.58 - 0.72) < 0.07;\n\n        const steppedThread =\n          motifVariant === 2 &&\n          ((distanceFromCenter + Math.floor(localRow)) % 4 === 0) &&\n          diamondDistance < 0.92;\n\n        const floatingMarks =\n          motifVariant === 3 &&\n          diamondDistance < 0.9 &&\n          patternHash(230 + medallionIndex + stripIndex * 19, distanceFromCenter, row) < 0.20;\n\n        let active =\n          onOuterDiamond ||\n          onInnerDiamond ||\n          centerGlyph ||\n          diagonalThreadA ||\n          diagonalThreadB ||\n          steppedThread ||\n          floatingMarks;\n\n        if (\n          !active &&\n          diamondDistance > 0.82 &&\n          diamondDistance < 1.05 &&\n          patternHash(240 + stripIndex * 7, distanceFromCenter, row) < frameStrength * 0.28\n        ) {\n          active = true;\n        }\n\n        if (!active) continue;\n\n        const centerProximity = 1 - Math.min(1, (normalizedX + normalizedY) * 0.78);\n        if (\n          centerProximity > 0.18 &&\n          patternHash(250 + stripIndex * 5, distanceFromCenter, row) < missingCenterChance * centerProximity\n        ) {\n          continue;\n        }\n\n        if (patternHash(260 + stripIndex * 11, distanceFromCenter, row) < silenceChance) continue;\n\n        let drawDistance = distanceFromCenter;\n        let drawRow = row;\n\n        if (patternHash(270 + stripIndex * 23, distanceFromCenter, row) < pairDisplacementChance) {\n          const verticalDirection =\n            patternHash(271 + stripIndex * 23, distanceFromCenter, row) < 0.5 ? -1 : 1;\n          drawRow += verticalDirection;\n\n          if (patternHash(272 + stripIndex * 23, distanceFromCenter, row) > 0.58) {\n            drawDistance += patternHash(273 + stripIndex * 23, distanceFromCenter, row) < 0.5 ? -1 : 1;\n          }\n        }\n\n        const moduleStartRow = medallionIndex * rowsPerMedallion;\n        const moduleEndRow = moduleStartRow + rowsPerMedallion - 1;\n\n        if (\n          drawDistance < centerGap ||\n          drawDistance >= halfCols ||\n          drawRow < moduleStartRow ||\n          drawRow > moduleEndRow\n        ) {\n          continue;\n        }\n\n        const leftCol = halfCols - 1 - drawDistance;\n        const rightCol = cols - 1 - leftCol;\n\n        const colorNoise = patternHash(\n          290 + medallionIndex + languageShift + stripIndex * 29,\n          distanceFromCenter,\n          row\n        );\n\n        let useRed = onOuterDiamond || centerGlyph;\n        if (paletteFlip) useRed = !useRed;\n        if (colorNoise > 0.72) useRed = !useRed;\n\n        g.fill(useRed ? RED : BLUE);\n\n        const inset = Math.max(1, cell * 0.12);\n        const squareSize = Math.max(1, cell - inset);\n        const drawY = top + drawRow * cell + inset * 0.5;\n\n        drawPatternCell(g, stripX, cell, leftCol, drawY, inset, squareSize);\n        drawPatternCell(g, stripX, cell, rightCol, drawY, inset, squareSize);\n      }\n    }\n  }\n\n  g.pop();\n}\n\nfunction drawPatternCell(g, patternX, cell, column, drawY, inset, squareSize) {\n  const drawX = patternX + column * cell + inset * 0.5;\n  const x1 = Math.round(drawX);\n  const y1 = Math.round(drawY);\n  const side = Math.max(1, Math.round(squareSize));\n  g.rect(x1, y1, side, side);\n}\n\nfunction patternHash(salt, a, b) {\n  const n = Math.sin(\n    salt * 93.173 +\n    a * 127.913 +\n    b * 311.719 +\n    patternSeed * 0.017 +\n    userSeed * 0.00031\n  ) * 43758.5453123;\n\n  return n - Math.floor(n);\n}\n\nfunction fitWrappedText(g, textValue, maxWidth, maxLines, startSize, minSize) {\n  let size = startSize;\n  let lines = [];\n\n  while (size >= minSize) {\n    g.textSize(size);\n    lines = wrapLines(g, textValue, maxWidth);\n    if (lines.length <= maxLines) break;\n    size -= 1;\n  }\n\n  return { size, lines };\n}\n\nfunction fitBilingualWrappedText(g, hebrewText, arabicText, maxWidth, maxLines, startSize, minSize) {\n  let size = startSize;\n  let hebrewLines = [];\n  let arabicLines = [];\n\n  while (size >= minSize) {\n    g.textSize(size);\n    hebrewLines = wrapLines(g, hebrewText, maxWidth);\n    arabicLines = wrapLines(g, arabicText, maxWidth);\n\n    if (hebrewLines.length <= maxLines && arabicLines.length <= maxLines) {\n      break;\n    }\n\n    size -= 1;\n  }\n\n  return { size, hebrewLines, arabicLines };\n}\n\nfunction drawMetricBlocks(g, x, y, activeCount, blockSize, gap) {\n  g.noStroke();\n\n  for (let i = 0; i < 5; i++) {\n    g.fill(i < activeCount ? ANSWER_BLOCK_COLOR : \"#d9d9d9\");\n    g.rect(x + i * (blockSize + gap), y, blockSize, blockSize);\n  }\n}\n\nfunction drawTicketBodyOn(g, x, y, w, h, layout) {\n  const he = CONTENT.he;\n  const ar = CONTENT.ar;\n  const textRight = layout.contentRight;\n  const contentW = layout.contentW;\n  const textOffset = Math.max(1.25, h * 0.00125);\n\n  g.push();\n  g.textFont(getTicketFont());\n  g.noStroke();\n\n  // Both languages are always present. Their overlap is rendered with multiply.\n  const noteY = y + h * 0.190;\n  g.textStyle(NORMAL);\n  g.textSize(h * 0.014);\n  drawBilingualRTLText(g, he.noteLabel, ar.noteLabel, textRight, noteY, {\n    offset: textOffset\n  });\n\n  const hebrewParagraph = getReflectionParagraph(\"he\");\n  const arabicParagraph = getReflectionParagraph(\"ar\");\n  const fitted = fitBilingualWrappedText(\n    g,\n    hebrewParagraph,\n    arabicParagraph,\n    contentW,\n    9,\n    h * 0.029,\n    h * 0.0225\n  );\n\n  g.textStyle(NORMAL);\n  g.textSize(fitted.size);\n  const paragraphLineH = fitted.size * 1.28;\n  const paragraphStartY = y + h * 0.210;\n  drawBilingualLines(\n    g,\n    fitted.hebrewLines,\n    fitted.arabicLines,\n    textRight,\n    paragraphStartY,\n    paragraphLineH,\n    textOffset\n  );\n\n  // Fixed row anchors preserve the exact vertical rhythm of the approved layout.\n  const rowStart = 0.490;\n  const rowEnd = 0.842;\n  const rowStep = (rowEnd - rowStart) / 4;\n  const rowAnchors = Array.from({ length: 5 }, function(_, index) {\n    return rowStart + index * rowStep;\n  });\n  const blockSize = h * 0.025;\n  const blockGap = h * 0.0095;\n  const blocksX = layout.contentX;\n  const blocksTotalW = blockSize * 5 + blockGap * 4;\n  const scoreToTextGap = w * 0.072;\n  const metricTextW = Math.max(\n    h * 0.16,\n    layout.contentRight - (blocksX + blocksTotalW + scoreToTextGap)\n  );\n\n  for (let i = 0; i < 5; i++) {\n    const rowY = y + h * rowAnchors[i];\n    const hebrewLabel = he.labels[i];\n    const arabicLabel = ar.labels[i];\n    const hebrewStatement = he.statements[i][answers[i] - 1];\n    const arabicStatement = ar.statements[i][answers[i] - 1];\n\n    drawMetricBlocks(\n      g,\n      blocksX,\n      rowY + h * 0.009,\n      answers[i],\n      blockSize,\n      blockGap\n    );\n\n    g.fill(92);\n    g.textSize(h * 0.0105);\n    g.textStyle(NORMAL);\n    drawLTRText(\n      g,\n      \"[\" + pad2(answers[i]) + \"]\",\n      blocksX,\n      rowY + blockSize + h * 0.014,\n      \"left\",\n      \"top\"\n    );\n\n    g.textStyle(BOLD);\n    g.textSize(h * 0.0212);\n    drawBilingualRTLText(\n      g,\n      hebrewLabel,\n      arabicLabel,\n      textRight,\n      rowY,\n      { offset: textOffset }\n    );\n\n    g.textStyle(NORMAL);\n    g.textSize(h * 0.0143);\n    const hebrewStatementLines = wrapLines(g, hebrewStatement, metricTextW).slice(0, 2);\n    const arabicStatementLines = wrapLines(g, arabicStatement, metricTextW).slice(0, 2);\n    drawBilingualLines(\n      g,\n      hebrewStatementLines,\n      arabicStatementLines,\n      textRight,\n      rowY + h * 0.0242,\n      h * 0.0182,\n      textOffset * 0.82\n    );\n  }\n\n  // The bilingual footer sits on the final baseline without competing with the readings.\n  const footerY = y + h * 0.952;\n  g.textStyle(NORMAL);\n  g.textSize(h * 0.0118);\n  const hebrewFooterLines = wrapLines(g, he.footerNote, contentW).slice(0, 1);\n  const arabicFooterLines = wrapLines(g, ar.footerNote, contentW).slice(0, 1);\n  drawBilingualLines(\n    g,\n    hebrewFooterLines,\n    arabicFooterLines,\n    textRight,\n    footerY,\n    h * 0.016,\n    textOffset * 0.75\n  );\n\n  g.pop();\n}\n\nfunction drawBarcodeOn(g, x, y, w, h, layout) {\n  // Kept as an empty hook. The approved landscape face has no barcode block;\n  // removing it prevents the lower-left area from becoming visually compressed.\n}\n\nfunction getReflectionParagraph(lang) {\n  const system = CONTENT[lang].reflectionSystem;\n  const average = answers.reduce((sum, value) => sum + value, 0) / answers.length;\n  const ranked = answers\n    .map((value, index) => ({ value, index }))\n    .sort((a, b) => b.value - a.value || a.index - b.index);\n\n  const topOne = ranked[0];\n  const topTwo = ranked[1];\n  const lowest = ranked.slice().sort((a, b) => a.value - b.value || a.index - b.index)[0];\n  const maximum = ranked[0].value;\n  const minimum = lowest.value;\n  const spread = maximum - minimum;\n\n  const openingBand = average <= 2.2 ? \"low\" : average >= 3.8 ? \"high\" : \"mid\";\n  const topOneBand = getReflectionScoreBand(topOne.value);\n  const topTwoBand = getReflectionScoreBand(topTwo.value);\n\n  const closingKey = spread >= 3 ? \"contrast\" : spread <= 1 ? \"even\" : \"balanced\";\n\n  const sentences = [\n    chooseReflectionText(system.opening[openingBand], 10),\n    chooseReflectionText(system.dimensions[topOne.index][topOneBand], 20 + topOne.index),\n    chooseReflectionText(system.dimensions[topTwo.index][topTwoBand], 30 + topTwo.index),\n    chooseReflectionText(system.closing[closingKey], 50)\n  ];\n\n  return sentences.filter(Boolean).join(\" \");\n}\n\nfunction getReflectionScoreBand(value) {\n  if (value <= 2) return \"low\";\n  if (value >= 4) return \"high\";\n  return \"mid\";\n}\n\nfunction chooseReflectionText(options, salt) {\n  if (!Array.isArray(options) || options.length === 0) return \"\";\n\n  const raw = Math.sin(\n    userSeed * 0.000127 +\n    patternSeed * 0.00173 +\n    salt * 41.771\n  ) * 43758.5453123;\n\n  const fraction = raw - Math.floor(raw);\n  const index = Math.min(options.length - 1, Math.floor(fraction * options.length));\n  return options[index];\n}\n\nfunction drawTextByLang(g, textValue, x, y) {\n  // Both Arabic and Hebrew are RTL languages.\n  drawRTLText(g, textValue, x, y);\n}\n\nfunction wrapLines(g, textValue, maxWidth) {\n  const words = String(textValue).trim().split(/\\s+/);\n  const lines = [];\n  const ctx = g.drawingContext;\n  let current = \"\";\n\n  ctx.save();\n  ctx.direction = \"rtl\";\n\n  for (let i = 0; i < words.length; i++) {\n    // Keep the logical word order. Native Canvas bidi rendering displays it RTL.\n    const test = current ? current + \" \" + words[i] : words[i];\n    if (ctx.measureText(test).width <= maxWidth || current === \"\") {\n      current = test;\n    } else {\n      lines.push(current);\n      current = words[i];\n    }\n  }\n\n  ctx.restore();\n  if (current) lines.push(current);\n  return lines;\n}\n\nfunction drawLines(g, lines, x, startY, lineHeight, direction) {\n  const useRTL = direction !== \"ltr\";\n  for (let i = 0; i < lines.length; i++) {\n    if (useRTL) {\n      drawRTLText(g, lines[i], x, startY + i * lineHeight);\n    } else {\n      drawLTRText(g, lines[i], x, startY + i * lineHeight, \"left\", \"top\");\n    }\n  }\n}\n\nfunction noiseHash(salt, a, b) {\n  const answerCode = answers[0] * 101 + answers[1] * 211 + answers[2] * 307 + answers[3] * 401 + answers[4] * 503 + patternSeed * 0.03;\n  const n = Math.sin(salt * 91.7 + a * 127.1 + b * 311.7 + answerCode) * 43758.5453123;\n  return n - Math.floor(n);\n}\n\nfunction mapValue(value, inMin, inMax, outMin, outMax) {\n  return outMin + (outMax - outMin) * ((value - inMin) / (inMax - inMin));\n}\n\nfunction pad2(value) {\n  return String(value).padStart(2, \"0\");\n}\n</script>\n</body>\n</html>";
 
 let reflectionTicketOpen = false;
 let reflectionTicketOverlay = null;
@@ -8445,15 +9412,45 @@ function syncReflectionTicketFrameWithMainSketch() {
     });
   }
 
+  if (!doc.__pagmarInteractionGuideBound) {
+    doc.__pagmarInteractionGuideBound = true;
+
+    const sliderInputs = Array.from(doc.querySelectorAll('input[type="range"]'));
+    sliderInputs.forEach(function(slider) {
+      slider.addEventListener("input", function() {
+        markPagmarInteractionGuideActivity("reflection");
+      }, { passive: true });
+    });
+  }
+
   // Pointer and keyboard activity inside srcdoc does not bubble to the parent
   // page, so forward it to the exhibition inactivity timer.
   if (!doc.__pagmarActivityForwardingBound) {
     doc.__pagmarActivityForwardingBound = true;
-    ["pointerdown", "pointermove", "keydown", "touchstart", "wheel", "input", "change"].forEach(
+    [
+      "pointerdown",
+      "pointermove",
+      "keydown",
+      "touchstart",
+      "touchmove",
+      "wheel",
+      "input",
+      "change"
+    ].forEach(
       function(eventName) {
         doc.addEventListener(
           eventName,
-          function() {
+          function(event) {
+            if (
+              eventName === "pointermove" &&
+              typeof event.buttons === "number" &&
+              event.buttons === 0
+            ) {
+              return;
+            }
+
+            markPagmarInteractionGuideActivity("reflection");
+
             if (typeof window.registerFlyingBirdActivity === "function") {
               window.registerFlyingBirdActivity();
             }
@@ -8466,6 +9463,8 @@ function syncReflectionTicketFrameWithMainSketch() {
 }
 
 function openReflectionTicket() {
+  reflectionInteractionGuideDismissed = false;
+  reflectionInteractionGuideLastActivityAt = -Infinity;
   ensureReflectionTicketOverlay();
   updateReflectionTicketOverlayLayout();
 
