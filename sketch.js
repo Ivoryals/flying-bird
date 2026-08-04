@@ -868,6 +868,9 @@ let homeScreenRoot = null;
 let homeScreenStyle = null;
 let homeScreenVideos = [];
 let homeScreenScrollGuide = null;
+let homeScreenPhotoCollage = null;
+let homeScreenRevealItems = [];
+let homeScreenRevealHandler = null;
 
 let homeVideoWindowX = null;
 let homeVideoWindowY = null;
@@ -2631,7 +2634,7 @@ function setupHomeScreenDom() {
       display: flex;
       flex-direction: column;
       gap: clamp(28px, 4.5vw, 72px);
-      padding: 0 3.25vw clamp(44px, 6vw, 110px);
+      padding: 0 3.25vw;
       background: #eeeeee;
     }
 
@@ -2655,6 +2658,91 @@ function setupHomeScreenDom() {
       object-position: center center;
     }
 
+    .pagmar-home-photo-collage {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      background: #eeeeee;
+    }
+
+    .pagmar-home-photo-row {
+      width: 100%;
+      min-height: clamp(680px, 98vh, 1080px);
+      display: flex;
+      align-items: center;
+      padding: clamp(110px, 16vh, 210px) 1.5vw;
+      background: #eeeeee;
+    }
+
+    .pagmar-home-photo-row-tree,
+    .pagmar-home-photo-row-table,
+    .pagmar-home-photo-row-family {
+      justify-content: center;
+    }
+
+    .pagmar-home-photo {
+      position: static;
+      display: block;
+      height: auto;
+      max-height: 68vh;
+      object-fit: contain;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      user-select: none;
+      -webkit-user-drag: none;
+      transform:
+        translate3d(
+          var(--home-photo-shift-x, 0px),
+          var(--home-photo-shift-y, 0px),
+          0
+        )
+        rotate(var(--home-photo-rotation, 0deg))
+        scale(var(--home-photo-scale, 1));
+      transform-origin: center;
+      transition: transform 1050ms cubic-bezier(.22,.61,.36,1);
+      will-change: transform;
+    }
+
+    .pagmar-home-photo-tree {
+      width: clamp(190px, 23vw, 360px);
+    }
+
+    .pagmar-home-photo-table {
+      width: clamp(220px, 26vw, 430px);
+    }
+
+    .pagmar-home-photo-family {
+      width: clamp(320px, 42vw, 680px);
+    }
+
+    .pagmar-home-scroll-reveal {
+      opacity: 0;
+      will-change: opacity, transform, clip-path;
+    }
+
+    /* These elements are animated directly by scroll progress in JavaScript. */
+    .pagmar-home-video-first.pagmar-home-scroll-reveal,
+    .pagmar-home-video-second.pagmar-home-scroll-reveal,
+    .pagmar-home-photo-row-tree.pagmar-home-scroll-reveal,
+    .pagmar-home-photo-row-table.pagmar-home-scroll-reveal,
+    .pagmar-home-photo-row-family.pagmar-home-scroll-reveal {
+      transition: none;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .pagmar-home-scroll-reveal {
+        opacity: 1;
+        transform: none !important;
+        clip-path: none !important;
+        transition: none;
+      }
+
+      .pagmar-home-photo {
+        transition: none;
+      }
+    }
+
     @media (max-width: 1100px) {
       .pagmar-home-intro {
         min-height: clamp(500px, 62vh, 640px);
@@ -2669,6 +2757,24 @@ function setupHomeScreenDom() {
       .pagmar-home-videos {
         padding-inline: 3.2vw;
       }
+
+      .pagmar-home-photo-row {
+        min-height: clamp(620px, 92vh, 900px);
+        padding-top: clamp(90px, 14vh, 150px);
+        padding-bottom: clamp(90px, 14vh, 150px);
+      }
+
+      .pagmar-home-photo-tree {
+        width: clamp(170px, 25vw, 280px);
+      }
+
+      .pagmar-home-photo-table {
+        width: clamp(210px, 31vw, 340px);
+      }
+
+      .pagmar-home-photo-family {
+        width: clamp(280px, 47vw, 500px);
+      }
     }
 
     @media (orientation: portrait) {
@@ -2678,6 +2784,24 @@ function setupHomeScreenDom() {
 
       .pagmar-home-text-overlap {
         font-size: clamp(36px, 6.8vw, 72px);
+      }
+
+      .pagmar-home-photo-row {
+        min-height: 92vh;
+        padding-top: 14vh;
+        padding-bottom: 14vh;
+      }
+
+      .pagmar-home-photo-tree {
+        width: clamp(150px, 43vw, 250px);
+      }
+
+      .pagmar-home-photo-table {
+        width: clamp(190px, 50vw, 300px);
+      }
+
+      .pagmar-home-photo-family {
+        width: clamp(250px, 66vw, 430px);
       }
     }
   `;
@@ -2724,16 +2848,54 @@ function setupHomeScreenDom() {
 
   const firstVideo = createHomeScreenVideo(
     "matte pour.mp4",
-    "pagmar-home-video pagmar-home-video-first"
+    "pagmar-home-video pagmar-home-video-first pagmar-home-scroll-reveal"
   );
   const secondVideo = createHomeScreenVideo(
     "aresh.mp4",
-    "pagmar-home-video pagmar-home-video-second"
+    "pagmar-home-video pagmar-home-video-second pagmar-home-scroll-reveal"
   );
 
   homeScreenVideos = [firstVideo, secondVideo];
 
+  homeScreenPhotoCollage = document.createElement("div");
+  homeScreenPhotoCollage.className = "pagmar-home-photo-collage";
+
+  const treeRow = document.createElement("div");
+  treeRow.className =
+    "pagmar-home-photo-row pagmar-home-photo-row-tree pagmar-home-scroll-reveal";
+  const treePhoto = createHomeScreenPhoto(
+    "tree.jpg",
+    "pagmar-home-photo pagmar-home-photo-tree",
+    "A tree beside the family home"
+  );
+  treeRow.appendChild(treePhoto);
+
+  const tableRow = document.createElement("div");
+  tableRow.className =
+    "pagmar-home-photo-row pagmar-home-photo-row-table pagmar-home-scroll-reveal";
+  const tablePhoto = createHomeScreenPhoto(
+    "defa.jpeg",
+    "pagmar-home-photo pagmar-home-photo-table",
+    "A table prepared with snacks and tea"
+  );
+  tableRow.appendChild(tablePhoto);
+
+  const familyRow = document.createElement("div");
+  familyRow.className =
+    "pagmar-home-photo-row pagmar-home-photo-row-family pagmar-home-scroll-reveal";
+  const familyPhoto = createHomeScreenPhoto(
+    "meandkids.png",
+    "pagmar-home-photo pagmar-home-photo-family",
+    "Family members gathered together at home"
+  );
+  familyRow.appendChild(familyPhoto);
+
+  homeScreenPhotoCollage.appendChild(treeRow);
+  homeScreenPhotoCollage.appendChild(tableRow);
+  homeScreenPhotoCollage.appendChild(familyRow);
+
   videos.appendChild(firstVideo);
+  videos.appendChild(homeScreenPhotoCollage);
   videos.appendChild(secondVideo);
   intro.appendChild(overlap);
   intro.appendChild(homeScreenScrollGuide);
@@ -2785,7 +2947,192 @@ function setupHomeScreenDom() {
     }
   });
 
+  setupHomeScrollReveal();
   updateHomeScreenDomLayout();
+}
+
+function randomHomeValue(minValue, maxValue) {
+  return minValue + Math.random() * (maxValue - minValue);
+}
+
+function setHomePhotoPlacement(row, preferredSide) {
+  if (!row) return;
+
+  const photo = row.querySelector(".pagmar-home-photo");
+  if (!photo) return;
+
+  const rowWidth = row.clientWidth || 1;
+  const photoWidth = photo.getBoundingClientRect().width || 1;
+  const safeMaximumShift = Math.max(
+    0,
+    (rowWidth - photoWidth) * 0.5 - 24
+  );
+
+  let shiftX = 0;
+
+  if (preferredSide === "left") {
+    shiftX = -randomHomeValue(
+      safeMaximumShift * 0.30,
+      safeMaximumShift * 0.84
+    );
+  } else if (preferredSide === "right") {
+    shiftX = randomHomeValue(
+      safeMaximumShift * 0.28,
+      safeMaximumShift * 0.82
+    );
+  } else {
+    shiftX = randomHomeValue(
+      -safeMaximumShift * 0.42,
+      safeMaximumShift * 0.42
+    );
+  }
+
+  photo.style.setProperty(
+    "--home-photo-shift-x",
+    shiftX.toFixed(1) + "px"
+  );
+  photo.style.setProperty(
+    "--home-photo-shift-y",
+    randomHomeValue(-34, 38).toFixed(1) + "px"
+  );
+  photo.style.setProperty(
+    "--home-photo-rotation",
+    randomHomeValue(-2.3, 2.3).toFixed(2) + "deg"
+  );
+  photo.style.setProperty(
+    "--home-photo-scale",
+    randomHomeValue(.94, 1.065).toFixed(3)
+  );
+}
+
+function randomizeHomePhotoPlacement() {
+  if (!homeScreenPhotoCollage) return;
+
+  setHomePhotoPlacement(
+    homeScreenPhotoCollage.querySelector(".pagmar-home-photo-row-tree"),
+    Math.random() < .82 ? "left" : "center"
+  );
+  setHomePhotoPlacement(
+    homeScreenPhotoCollage.querySelector(".pagmar-home-photo-row-table"),
+    Math.random() < .82 ? "right" : "center"
+  );
+  setHomePhotoPlacement(
+    homeScreenPhotoCollage.querySelector(".pagmar-home-photo-row-family"),
+    Math.random() < .62 ? "left" : "center"
+  );
+}
+
+function getHomeScrollRevealProgress(item) {
+  if (!homeScreenRoot || !item) return 0;
+
+  const rect = item.getBoundingClientRect();
+  const viewportHeight = homeScreenRoot.clientHeight || window.innerHeight || 1;
+  const startY = viewportHeight * 0.92;
+  const endY = viewportHeight * 0.28;
+  const raw = (startY - rect.top) / Math.max(1, startY - endY);
+  return constrain(raw, 0, 1);
+}
+
+function applyHomeScrollRevealProgress(item, progress) {
+  if (!item) return;
+
+  item.style.opacity = progress.toFixed(3);
+
+  if (item.classList.contains("pagmar-home-video-first")) {
+    const translateY = 44 * (1 - progress);
+    const scale = 0.93 + 0.07 * progress;
+    const insetY = 14 * (1 - progress);
+    item.style.transform = `translateY(${translateY.toFixed(1)}px) scale(${scale.toFixed(4)})`;
+    item.style.clipPath = `inset(${insetY.toFixed(2)}% 0 ${insetY.toFixed(2)}% 0)`;
+    return;
+  }
+
+  if (item.classList.contains("pagmar-home-video-second")) {
+    const translateX = 120 * (1 - progress);
+    const scale = 0.985 + 0.015 * progress;
+    const insetLeft = 18 * (1 - progress);
+    item.style.transform = `translateX(${translateX.toFixed(1)}px) scale(${scale.toFixed(4)})`;
+    item.style.clipPath = `inset(0 0 0 ${insetLeft.toFixed(2)}%)`;
+    return;
+  }
+
+  item.style.clipPath = "none";
+
+  if (item.classList.contains("pagmar-home-photo-row-tree")) {
+    const tx = -84 * (1 - progress);
+    const ty = 54 * (1 - progress);
+    item.style.transform = `translate(${tx.toFixed(1)}px, ${ty.toFixed(1)}px)`;
+    return;
+  }
+
+  if (item.classList.contains("pagmar-home-photo-row-table")) {
+    const tx = 92 * (1 - progress);
+    const ty = 42 * (1 - progress);
+    item.style.transform = `translate(${tx.toFixed(1)}px, ${ty.toFixed(1)}px)`;
+    return;
+  }
+
+  if (item.classList.contains("pagmar-home-photo-row-family")) {
+    const ty = 96 * (1 - progress);
+    const scale = 0.955 + 0.045 * progress;
+    item.style.transform = `translateY(${ty.toFixed(1)}px) scale(${scale.toFixed(4)})`;
+    return;
+  }
+
+  item.style.transform = "none";
+}
+
+function updateHomeScrollRevealProgress() {
+  if (!homeScreenRoot || !homeScreenRevealItems.length) return;
+
+  for (let item of homeScreenRevealItems) {
+    const progress = getHomeScrollRevealProgress(item);
+    applyHomeScrollRevealProgress(item, progress);
+  }
+}
+
+function setupHomeScrollReveal() {
+  if (!homeScreenRoot) return;
+
+  homeScreenRevealItems = Array.from(
+    homeScreenRoot.querySelectorAll(".pagmar-home-scroll-reveal")
+  );
+
+  if (homeScreenRevealHandler) {
+    homeScreenRoot.removeEventListener("scroll", homeScreenRevealHandler);
+    window.removeEventListener("resize", homeScreenRevealHandler);
+  }
+
+  homeScreenRevealHandler = function() {
+    updateHomeScrollRevealProgress();
+  };
+
+  homeScreenRoot.addEventListener("scroll", homeScreenRevealHandler, {
+    passive: true
+  });
+  window.addEventListener("resize", homeScreenRevealHandler, {
+    passive: true
+  });
+
+  updateHomeScrollRevealProgress();
+}
+
+function resetHomeScrollReveal() {
+  if (!homeScreenRoot) return;
+  updateHomeScrollRevealProgress();
+}
+
+function createHomeScreenPhoto(filename, className, altText) {
+  const image = document.createElement("img");
+  image.className = className;
+  image.src = filename;
+  image.alt = altText || "";
+  image.loading = "eager";
+  image.decoding = "async";
+  image.addEventListener("error", function() {
+    console.log("MISSING FILE: " + filename + " (put it beside sketch.js)");
+  });
+  return image;
 }
 
 function createHomeScreenVideo(filename, className) {
@@ -2833,6 +3180,9 @@ function openHomeScreenDom() {
   }
 
   requestAnimationFrame(function() {
+    randomizeHomePhotoPlacement();
+    setupHomeScrollReveal();
+    resetHomeScrollReveal();
     playHomeScreenVideos();
   });
 }
@@ -2855,6 +3205,14 @@ function hideHomeScreenDomOnly() {
     if (!video) continue;
     try { video.pause(); } catch (error) {}
   }
+
+  if (homeScreenRevealHandler && homeScreenRoot) {
+    homeScreenRoot.removeEventListener("scroll", homeScreenRevealHandler);
+    window.removeEventListener("resize", homeScreenRevealHandler);
+    homeScreenRevealHandler = null;
+  }
+
+  homeScreenRevealItems = [];
 
   if (homeScreenRoot) {
     homeScreenRoot.style.display = "none";
