@@ -258,12 +258,113 @@ function getPagmarScreenType(role) {
 })();
 
 // ---- Shared screen transition ----------------------------------------------
+// The currently visible interface is frozen into two clean horizontal panels.
+// The destination is opened underneath immediately, then the two halves move
+// away from the centre without a holding frame or seam stroke.
 (function installPagmarScreenTransition() {
   if (typeof window === "undefined" || typeof document === "undefined") return;
   if (window.playPagmarScreenTransition) return;
 
   let overlay = null;
+  let topPanel = null;
+  let bottomPanel = null;
   let hideTimer = null;
+  let transitionActive = false;
+
+  function getTransitionSnapshot() {
+    const canvas = document.querySelector("body > canvas, canvas");
+    if (!canvas || typeof canvas.toDataURL !== "function") return "";
+
+    try {
+      return canvas.toDataURL("image/png");
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function isVisibleTransitionSource(element) {
+    if (!element || !element.isConnected) return false;
+    const style = window.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return (
+      style.display !== "none" &&
+      style.visibility !== "hidden" &&
+      Number(style.opacity || 1) > 0 &&
+      rect.width > 1 &&
+      rect.height > 1
+    );
+  }
+
+  function getActiveTransitionSource() {
+    const candidates = [
+      document.getElementById("reflectionTicketOverlay"),
+      document.getElementById("pagmar-home-screen"),
+      document.querySelector(".pagmar-border-screen")
+    ];
+
+    for (let i = 0; i < candidates.length; i++) {
+      if (isVisibleTransitionSource(candidates[i])) return candidates[i];
+    }
+
+    return null;
+  }
+
+  function syncClonedMedia(source, clone) {
+    const sourceVideos = source.querySelectorAll("video");
+    const cloneVideos = clone.querySelectorAll("video");
+
+    for (let i = 0; i < Math.min(sourceVideos.length, cloneVideos.length); i++) {
+      try {
+        cloneVideos[i].muted = true;
+        cloneVideos[i].currentTime = sourceVideos[i].currentTime || 0;
+        const promise = cloneVideos[i].play();
+        if (promise && typeof promise.catch === "function") promise.catch(function() {});
+      } catch (error) {}
+    }
+  }
+
+  function addSourceClone(panel, source, isBottomHalf) {
+    if (!source) return;
+
+    const rect = source.getBoundingClientRect();
+    const clone = source.cloneNode(true);
+    const viewportShift = isBottomHalf ? window.innerHeight * 0.5 : 0;
+
+    clone.removeAttribute("aria-hidden");
+    Object.assign(clone.style, {
+      position: "absolute",
+      left: rect.left + "px",
+      right: "auto",
+      top: rect.top - viewportShift + "px",
+      bottom: "auto",
+      width: rect.width + "px",
+      height: rect.height + "px",
+      minWidth: "0",
+      minHeight: "0",
+      margin: "0",
+      display: "block",
+      visibility: "visible",
+      opacity: "1",
+      transform: "none",
+      pointerEvents: "none",
+      zIndex: "1",
+      overflow: "hidden"
+    });
+
+    panel.appendChild(clone);
+
+    try {
+      clone.scrollTop = source.scrollTop || 0;
+      clone.scrollLeft = source.scrollLeft || 0;
+    } catch (error) {}
+
+    syncClonedMedia(source, clone);
+  }
+
+  function clearPanel(panel) {
+    if (!panel) return;
+    while (panel.firstChild) panel.removeChild(panel.firstChild);
+  }
 
   function ensureOverlay() {
     if (overlay) return overlay;
@@ -275,16 +376,70 @@ function getPagmarScreenType(role) {
     overlay.style.inset = "0";
     overlay.style.zIndex = "1000004";
     overlay.style.pointerEvents = "none";
-    overlay.style.opacity = "0";
     overlay.style.display = "none";
-    overlay.style.background = "#eeeeee";
+    overlay.style.overflow = "hidden";
+    overlay.style.background = "transparent";
+
+    topPanel = document.createElement("div");
+    bottomPanel = document.createElement("div");
+
+    [topPanel, bottomPanel].forEach(function(panel) {
+      panel.style.position = "absolute";
+      panel.style.left = "0";
+      panel.style.right = "0";
+      panel.style.height = "50.05%";
+      panel.style.overflow = "hidden";
+      panel.style.backgroundRepeat = "no-repeat";
+      panel.style.backgroundSize = "100vw 100vh";
+      panel.style.willChange = "transform";
+      panel.style.transform = "translate3d(0,0,0)";
+      panel.style.transition = "none";
+      panel.style.backfaceVisibility = "hidden";
+      panel.style.border = "0";
+      panel.style.outline = "0";
+      panel.style.boxShadow = "none";
+    });
+
+    topPanel.style.top = "0";
+    topPanel.style.backgroundPosition = "left top";
+
+    bottomPanel.style.bottom = "0";
+    bottomPanel.style.backgroundPosition = "left bottom";
+
+    overlay.appendChild(topPanel);
+    overlay.appendChild(bottomPanel);
     document.body.appendChild(overlay);
 
     return overlay;
   }
 
+  function finishTransition() {
+    if (!overlay) return;
+
+    overlay.style.display = "none";
+    overlay.style.pointerEvents = "none";
+    overlay.setAttribute("aria-hidden", "true");
+
+    [topPanel, bottomPanel].forEach(function(panel) {
+      panel.style.transition = "none";
+      panel.style.transform = "translate3d(0,0,0)";
+      panel.style.backgroundImage = "none";
+      clearPanel(panel);
+    });
+
+    hideTimer = null;
+    transitionActive = false;
+  }
+
   function playPagmarScreenTransition(backgroundColor) {
+    if (transitionActive) return false;
+
     const element = ensureOverlay();
+    const snapshot = getTransitionSnapshot();
+    const source = getActiveTransitionSource();
+    const fallback = backgroundColor || "#eeeeee";
+
+    transitionActive = true;
 
     if (hideTimer !== null) {
       clearTimeout(hideTimer);
@@ -292,28 +447,186 @@ function getPagmarScreenType(role) {
     }
 
     element.style.display = "block";
-    element.style.background = backgroundColor || "#eeeeee";
-    element.style.transition = "none";
-    element.style.opacity = "1";
+    element.style.pointerEvents = "auto";
+    element.style.background = "transparent";
+    element.setAttribute("aria-hidden", "false");
 
-    // The destination screen is opened behind this layer. The layer then
-    // clears with one restrained fade, without adding any new interface.
-    requestAnimationFrame(function() {
-      requestAnimationFrame(function() {
-        element.style.transition = "opacity 430ms ease";
-        element.style.opacity = "0";
-
-        hideTimer = setTimeout(function() {
-          element.style.display = "none";
-          element.style.transition = "none";
-          hideTimer = null;
-        }, 470);
-      });
+    [topPanel, bottomPanel].forEach(function(panel, index) {
+      clearPanel(panel);
+      panel.style.transition = "none";
+      panel.style.transform = "translate3d(0,0,0)";
+      panel.style.backgroundColor = fallback;
+      panel.style.backgroundImage = snapshot ? 'url("' + snapshot + '")' : "none";
+      addSourceClone(panel, source, index === 1);
     });
+
+    // Commit the closed state once, then start the movement in the same event.
+    // The destination is opened synchronously underneath immediately afterward.
+    void element.offsetHeight;
+
+    const motion = "transform 900ms cubic-bezier(.76,0,.24,1)";
+    topPanel.style.transition = motion;
+    bottomPanel.style.transition = motion;
+    topPanel.style.transform = "translate3d(0,-100.5%,0)";
+    bottomPanel.style.transform = "translate3d(0,100.5%,0)";
+
+    hideTimer = setTimeout(finishTransition, 950);
+    return true;
   }
 
   window.playPagmarScreenTransition = playPagmarScreenTransition;
+  window.isPagmarScreenTransitionActive = function() {
+    return transitionActive;
+  };
 })();
+
+// Smooth wheel scrolling for the vertically scrolling DOM screens.
+// Wheel input is eased through one requestAnimationFrame loop. Touch scrolling
+// remains native so the interface keeps the device's own momentum behaviour.
+const PAGMAR_SMOOTH_SCROLL_STATES = new WeakMap();
+
+function installPagmarSmoothWheelScroll(root) {
+  if (!root || PAGMAR_SMOOTH_SCROLL_STATES.has(root)) return;
+
+  const state = {
+    current: root.scrollTop || 0,
+    target: root.scrollTop || 0,
+    frame: null,
+    lastTime: 0,
+    applying: false
+  };
+
+  PAGMAR_SMOOTH_SCROLL_STATES.set(root, state);
+  root.style.scrollBehavior = "auto";
+
+  function getMaximumScroll() {
+    return Math.max(0, root.scrollHeight - root.clientHeight);
+  }
+
+  function clampTarget(value) {
+    return Math.max(0, Math.min(getMaximumScroll(), value));
+  }
+
+  function animate(now) {
+    state.frame = null;
+    if (!root.isConnected) return;
+
+    const dt = state.lastTime ? Math.min(34, now - state.lastTime) : 16.7;
+    state.lastTime = now;
+    state.target = clampTarget(state.target);
+
+    // A shorter time constant keeps the motion soft without allowing the
+    // content to trail far behind fast trackpad input.
+    const follow = 1 - Math.exp(-dt / 112);
+    state.current += (state.target - state.current) * follow;
+
+    if (Math.abs(state.target - state.current) < 0.18) {
+      state.current = state.target;
+    }
+
+    state.applying = true;
+    root.scrollTop = state.current;
+    state.applying = false;
+
+    if (Math.abs(state.target - state.current) >= 0.18) {
+      state.frame = requestAnimationFrame(animate);
+    } else {
+      state.lastTime = 0;
+      state.frame = null;
+    }
+  }
+
+  function requestAnimation() {
+    if (state.frame === null) {
+      state.frame = requestAnimationFrame(animate);
+    }
+  }
+
+  state.scrollTo = function(position, immediate) {
+    const destination = clampTarget(Number(position) || 0);
+
+    if (immediate) {
+      if (state.frame !== null) cancelAnimationFrame(state.frame);
+      state.frame = null;
+      state.lastTime = 0;
+      state.current = destination;
+      state.target = destination;
+      state.applying = true;
+      root.scrollTop = destination;
+      state.applying = false;
+      return;
+    }
+
+    if (state.frame === null) state.current = root.scrollTop;
+    state.target = destination;
+    requestAnimation();
+  };
+
+  root.addEventListener(
+    "wheel",
+    function(event) {
+      const dominant =
+        Math.abs(event.deltaY || 0) >= Math.abs(event.deltaX || 0)
+          ? event.deltaY || 0
+          : event.deltaX || 0;
+
+      let delta = dominant;
+      if (event.deltaMode === 1) delta *= 16;
+      if (event.deltaMode === 2) delta *= Math.max(1, root.clientHeight);
+
+      // Avoid one unusually large device event creating a long delayed glide.
+      const maximumStep = Math.max(180, root.clientHeight * 0.72);
+      delta = Math.max(-maximumStep, Math.min(maximumStep, delta));
+
+      if (state.frame === null) {
+        state.current = root.scrollTop;
+        state.target = root.scrollTop;
+      }
+
+      state.target = clampTarget(state.target + delta);
+      requestAnimation();
+      event.preventDefault();
+    },
+    { passive: false }
+  );
+
+  root.addEventListener(
+    "scroll",
+    function() {
+      if (state.applying) return;
+
+      // A scroll event caused by our current animation may be delivered after
+      // the assignment itself. Keep the easing alive when the DOM position is
+      // already the value calculated by the active animation frame.
+      if (
+        state.frame !== null &&
+        Math.abs(root.scrollTop - state.current) < 1.25
+      ) {
+        return;
+      }
+
+      // Native touch, keyboard and scrollbar movement become the new baseline.
+      if (state.frame !== null) cancelAnimationFrame(state.frame);
+      state.frame = null;
+      state.lastTime = 0;
+      state.current = root.scrollTop;
+      state.target = root.scrollTop;
+    },
+    { passive: true }
+  );
+}
+
+function setPagmarSmoothScrollPosition(root, position, immediate) {
+  if (!root) return;
+  installPagmarSmoothWheelScroll(root);
+
+  const state = PAGMAR_SMOOTH_SCROLL_STATES.get(root);
+  if (state && typeof state.scrollTo === "function") {
+    state.scrollTo(position, immediate === true);
+  } else {
+    root.scrollTop = Number(position) || 0;
+  }
+}
 
 // ---- Shared interaction guidance -------------------------------------------
 let pagmarInteractionGuide = null;
@@ -867,17 +1180,17 @@ let nextArabicGridRows = [];
 let nextTargetPlacements = {};
 let nextFoundWords = [];
 
-// LANGUAGE / שפה / لغة rearrangement animation.
-// This copies the smooth independent letter crossfades from the supplied
-// recording sketch, but runs inside the main responsive word-search grid.
+// LANGUAGE / \u05E9\u05E4\u05D4 / \u0644\u063A\u0629 rearrangement animation.
+// Independent Hebrew and Arabic letter crossfades follow the supplied
+// reference animation. The complete change-and-settle sequence is 4 seconds.
 let languageMorphGrid = [];
 let languageMorphSettling = false;
 let languageMorphFinalStarted = false;
 let languageMorphFinalStartTime = 0;
 let languageRearrangeCompleted = false;
 
-const LANGUAGE_MORPH_CHANGE_DURATION = 3600;
-const LANGUAGE_MORPH_FINAL_DURATION = 900;
+const LANGUAGE_MORPH_CHANGE_DURATION = 3000;
+const LANGUAGE_MORPH_FINAL_DURATION = 1000;
 const LANGUAGE_MORPH_MIN_CHANGE_INTERVAL = 150;
 const LANGUAGE_MORPH_MAX_CHANGE_INTERVAL = 450;
 const LANGUAGE_MORPH_MIN_FADE_DURATION = 100;
@@ -898,7 +1211,9 @@ let homeScreenVideos = [];
 let homeScreenScrollGuide = null;
 let homeScreenPhotoCollage = null;
 let homeScreenRevealItems = [];
+let homeScreenRevealMetrics = [];
 let homeScreenRevealHandler = null;
+let homeScreenRevealFrame = null;
 
 let homeVideoWindowX = null;
 let homeVideoWindowY = null;
@@ -1040,10 +1355,14 @@ const MEMORY_ARABIC_FONT_SCALE = 0.82;
 let belongingPopupOpen = false;
 let belongingCyanImg = null;
 let belongingRedImg = null;
+let belongingPhotoFlag = null;
+let belongingPhotoWoman = null;
+let belongingPhotoStatue = null;
+let belongingPhotoFamily = null;
 let belongingPopupOpenStartedAt = -1;
 let belongingPopupOpenDuration = 680;
 
-// Horizontal sequence state for انتماء / שייכות.
+// Horizontal sequence state for \u0627\u0646\u062A\u0645\u0627\u0621 / \u05E9\u05D9\u05D9\u05DB\u05D5\u05EA.
 // The poem is split across three text panels with the existing image between them.
 let belongingHorizontalOffset = 0;
 let belongingHorizontalTarget = 0;
@@ -1054,10 +1373,15 @@ let belongingHorizontalDragStartOffset = 0;
 let belongingHorizontalLastPointerX = 0;
 let belongingHorizontalLastPointerTime = 0;
 let belongingHorizontalVelocity = 0;
-const BELONGING_PANEL_COUNT = 4;
+let belongingHorizontalLastUpdateAt = 0;
+let belongingHorizontalWheelLastAt = -Infinity;
+let belongingHorizontalWheelSnapPending = false;
+const BELONGING_SCROLL_FOLLOW_MS = 175;
+const BELONGING_WHEEL_SNAP_DELAY_MS = 220;
+const BELONGING_PANEL_COUNT = 7;
 
 // Hints are intentionally limited to these three project words, in this order.
-const PAGMAR_HINT_HEBREW_ORDER = ["שייכות", "השתקפות", "בית"];
+const PAGMAR_HINT_HEBREW_ORDER = ["\u05E9\u05D9\u05D9\u05DB\u05D5\u05EA", "\u05D4\u05E9\u05EA\u05E7\u05E4\u05D5\u05EA", "\u05D1\u05D9\u05EA"];
 
 let landPopupOpen = false;
 let landVideo;
@@ -1069,8 +1393,8 @@ let belongingActiveDoorId = null;
 let belongingDoors = [
   {
     id: "village",
-    labelHebrew: "הכפר",
-    labelArabic: "القرية",
+    labelHebrew: "\u05D4\u05DB\u05E4\u05E8",
+    labelArabic: "\u0627\u0644\u0642\u0631\u064A\u0629",
     mediaType: "image",
     imageFile: "",
     img: null,
@@ -1080,8 +1404,8 @@ let belongingDoors = [
   },
   {
     id: "university",
-    labelHebrew: "האוניברסיטה",
-    labelArabic: "الجامعة",
+    labelHebrew: "\u05D4\u05D0\u05D5\u05E0\u05D9\u05D1\u05E8\u05E1\u05D9\u05D8\u05D4",
+    labelArabic: "\u0627\u0644\u062C\u0627\u0645\u0639\u0629",
     mediaType: "sound",
     soundFile: "",
     sound: null,
@@ -1091,8 +1415,8 @@ let belongingDoors = [
   },
   {
     id: "haifa",
-    labelHebrew: "חיפה",
-    labelArabic: "حيفا",
+    labelHebrew: "\u05D7\u05D9\u05E4\u05D4",
+    labelArabic: "\u062D\u064A\u0641\u0627",
     mediaType: "image",
     imageFile: "",
     img: null,
@@ -1102,8 +1426,8 @@ let belongingDoors = [
   },
   {
     id: "family",
-    labelHebrew: "המשפחה",
-    labelArabic: "العائلة",
+    labelHebrew: "\u05D4\u05DE\u05E9\u05E4\u05D7\u05D4",
+    labelArabic: "\u0627\u0644\u0639\u0627\u0626\u0644\u0629",
     mediaType: "video",
     videoFiles: [],
     video: null,
@@ -1113,8 +1437,8 @@ let belongingDoors = [
   },
   {
     id: "digital",
-    labelHebrew: "המרחב הדיגיטלי",
-    labelArabic: "الفضاء الرقمي",
+    labelHebrew: "\u05D4\u05DE\u05E8\u05D7\u05D1 \u05D4\u05D3\u05D9\u05D2\u05D9\u05D8\u05DC\u05D9",
+    labelArabic: "\u0627\u0644\u0641\u0636\u0627\u0621 \u0627\u0644\u0631\u0642\u0645\u064A",
     mediaType: "sound",
     soundFile: "",
     sound: null,
@@ -1124,109 +1448,115 @@ let belongingDoors = [
   }
 ];
 
-let borderHebrewText = "הגבול משאיר אותי במקום תלוי, לא כאן לגמרי ולא שם. אני לא רוצה לחצות אותו, אבל אני לא מפסיקה לדמיין איך עיר הולדתי נראית מן הצד השני. אולי אותם הרים היו מרגישים אחרת משם. אולי הבית היה נראה אחרת. אני נשארת במקום שבו אני עומדת, אבל המבט שלי ממשיך לעבור מעבר לקו.";
+let borderHebrewText = "\u05D4\u05D2\u05D1\u05D5\u05DC \u05DE\u05E9\u05D0\u05D9\u05E8 \u05D0\u05D5\u05EA\u05D9 \u05D1\u05DE\u05E7\u05D5\u05DD \u05EA\u05DC\u05D5\u05D9, \u05DC\u05D0 \u05DB\u05D0\u05DF \u05DC\u05D2\u05DE\u05E8\u05D9 \u05D5\u05DC\u05D0 \u05E9\u05DD. \u05D0\u05E0\u05D9 \u05DC\u05D0 \u05E8\u05D5\u05E6\u05D4 \u05DC\u05D7\u05E6\u05D5\u05EA \u05D0\u05D5\u05EA\u05D5, \u05D0\u05D1\u05DC \u05D0\u05E0\u05D9 \u05DC\u05D0 \u05DE\u05E4\u05E1\u05D9\u05E7\u05D4 \u05DC\u05D3\u05DE\u05D9\u05D9\u05DF \u05D0\u05D9\u05DA \u05E2\u05D9\u05E8 \u05D4\u05D5\u05DC\u05D3\u05EA\u05D9 \u05E0\u05E8\u05D0\u05D9\u05EA \u05DE\u05DF \u05D4\u05E6\u05D3 \u05D4\u05E9\u05E0\u05D9. \u05D0\u05D5\u05DC\u05D9 \u05D0\u05D5\u05EA\u05DD \u05D4\u05E8\u05D9\u05DD \u05D4\u05D9\u05D5 \u05DE\u05E8\u05D2\u05D9\u05E9\u05D9\u05DD \u05D0\u05D7\u05E8\u05EA \u05DE\u05E9\u05DD. \u05D0\u05D5\u05DC\u05D9 \u05D4\u05D1\u05D9\u05EA \u05D4\u05D9\u05D4 \u05E0\u05E8\u05D0\u05D4 \u05D0\u05D7\u05E8\u05EA. \u05D0\u05E0\u05D9 \u05E0\u05E9\u05D0\u05E8\u05EA \u05D1\u05DE\u05E7\u05D5\u05DD \u05E9\u05D1\u05D5 \u05D0\u05E0\u05D9 \u05E2\u05D5\u05DE\u05D3\u05EA, \u05D0\u05D1\u05DC \u05D4\u05DE\u05D1\u05D8 \u05E9\u05DC\u05D9 \u05DE\u05DE\u05E9\u05D9\u05DA \u05DC\u05E2\u05D1\u05D5\u05E8 \u05DE\u05E2\u05D1\u05E8 \u05DC\u05E7\u05D5.";
 
-let borderArabicText = "الحدّ يتركني في مكان معلّق، لست هنا تمامًا ولا هناك. لا أريد أن أعبره، لكنني لا أتوقف عن تخيّل كيف تبدو بلدتي من الجهة الأخرى. ربما تشعر الجبال نفسها بشكل مختلف من هناك. ربما يبدو البيت بمنظر آخر. أبقى في مكاني، لكن نظرتي تستمرّ في العبور إلى ما بعد الخط.";
+let borderArabicText = "\u0627\u0644\u062D\u062F\u0651 \u064A\u062A\u0631\u0643\u0646\u064A \u0641\u064A \u0645\u0643\u0627\u0646 \u0645\u0639\u0644\u0651\u0642\u060C \u0644\u0633\u062A \u0647\u0646\u0627 \u062A\u0645\u0627\u0645\u064B\u0627 \u0648\u0644\u0627 \u0647\u0646\u0627\u0643. \u0644\u0627 \u0623\u0631\u064A\u062F \u0623\u0646 \u0623\u0639\u0628\u0631\u0647\u060C \u0644\u0643\u0646\u0646\u064A \u0644\u0627 \u0623\u062A\u0648\u0642\u0641 \u0639\u0646 \u062A\u062E\u064A\u0651\u0644 \u0643\u064A\u0641 \u062A\u0628\u062F\u0648 \u0628\u0644\u062F\u062A\u064A \u0645\u0646 \u0627\u0644\u062C\u0647\u0629 \u0627\u0644\u0623\u062E\u0631\u0649. \u0631\u0628\u0645\u0627 \u062A\u0634\u0639\u0631 \u0627\u0644\u062C\u0628\u0627\u0644 \u0646\u0641\u0633\u0647\u0627 \u0628\u0634\u0643\u0644 \u0645\u062E\u062A\u0644\u0641 \u0645\u0646 \u0647\u0646\u0627\u0643. \u0631\u0628\u0645\u0627 \u064A\u0628\u062F\u0648 \u0627\u0644\u0628\u064A\u062A \u0628\u0645\u0646\u0638\u0631 \u0622\u062E\u0631. \u0623\u0628\u0642\u0649 \u0641\u064A \u0645\u0643\u0627\u0646\u064A\u060C \u0644\u0643\u0646 \u0646\u0638\u0631\u062A\u064A \u062A\u0633\u062A\u0645\u0631\u0651 \u0641\u064A \u0627\u0644\u0639\u0628\u0648\u0631 \u0625\u0644\u0649 \u0645\u0627 \u0628\u0639\u062F \u0627\u0644\u062E\u0637.";
 
-let blurHebrewText = "טשטוש אינו חוסר בראייה, אלא דרך אחרת שבה האמת מופיעה. לפעמים דבר אינו לא ברור מפני שהוא רחוק, אלא מפני שהוא מחזיק יותר ממשמעות אחת באותו זמן. בין שפה לשפה, בין מקום למקום, התווים משתנים מעט, כאילו הדימוי מסרב להתקבע לצורה אחת. מה שאני רואה מצד אחד, עשוי להיראות אחרת מצד אחר. ומה שנראה מטושטש לאחרים, יכול להיות עבורי מדויק יותר מהבהירות עצמה. בתוך הטשטוש החלקים נשארים פתוחים, לא מוכרעים, ולא מתורגמים עד הסוף. זהו מרחב זמני בין היעלמות להופעה, בין להיראות לבין להיות מובן.";
+let blurHebrewText = "\u05D8\u05E9\u05D8\u05D5\u05E9 \u05D0\u05D9\u05E0\u05D5 \u05D7\u05D5\u05E1\u05E8 \u05D1\u05E8\u05D0\u05D9\u05D9\u05D4, \u05D0\u05DC\u05D0 \u05D3\u05E8\u05DA \u05D0\u05D7\u05E8\u05EA \u05E9\u05D1\u05D4 \u05D4\u05D0\u05DE\u05EA \u05DE\u05D5\u05E4\u05D9\u05E2\u05D4. \u05DC\u05E4\u05E2\u05DE\u05D9\u05DD \u05D3\u05D1\u05E8 \u05D0\u05D9\u05E0\u05D5 \u05DC\u05D0 \u05D1\u05E8\u05D5\u05E8 \u05DE\u05E4\u05E0\u05D9 \u05E9\u05D4\u05D5\u05D0 \u05E8\u05D7\u05D5\u05E7, \u05D0\u05DC\u05D0 \u05DE\u05E4\u05E0\u05D9 \u05E9\u05D4\u05D5\u05D0 \u05DE\u05D7\u05D6\u05D9\u05E7 \u05D9\u05D5\u05EA\u05E8 \u05DE\u05DE\u05E9\u05DE\u05E2\u05D5\u05EA \u05D0\u05D7\u05EA \u05D1\u05D0\u05D5\u05EA\u05D5 \u05D6\u05DE\u05DF. \u05D1\u05D9\u05DF \u05E9\u05E4\u05D4 \u05DC\u05E9\u05E4\u05D4, \u05D1\u05D9\u05DF \u05DE\u05E7\u05D5\u05DD \u05DC\u05DE\u05E7\u05D5\u05DD, \u05D4\u05EA\u05D5\u05D5\u05D9\u05DD \u05DE\u05E9\u05EA\u05E0\u05D9\u05DD \u05DE\u05E2\u05D8, \u05DB\u05D0\u05D9\u05DC\u05D5 \u05D4\u05D3\u05D9\u05DE\u05D5\u05D9 \u05DE\u05E1\u05E8\u05D1 \u05DC\u05D4\u05EA\u05E7\u05D1\u05E2 \u05DC\u05E6\u05D5\u05E8\u05D4 \u05D0\u05D7\u05EA. \u05DE\u05D4 \u05E9\u05D0\u05E0\u05D9 \u05E8\u05D5\u05D0\u05D4 \u05DE\u05E6\u05D3 \u05D0\u05D7\u05D3, \u05E2\u05E9\u05D5\u05D9 \u05DC\u05D4\u05D9\u05E8\u05D0\u05D5\u05EA \u05D0\u05D7\u05E8\u05EA \u05DE\u05E6\u05D3 \u05D0\u05D7\u05E8. \u05D5\u05DE\u05D4 \u05E9\u05E0\u05E8\u05D0\u05D4 \u05DE\u05D8\u05D5\u05E9\u05D8\u05E9 \u05DC\u05D0\u05D7\u05E8\u05D9\u05DD, \u05D9\u05DB\u05D5\u05DC \u05DC\u05D4\u05D9\u05D5\u05EA \u05E2\u05D1\u05D5\u05E8\u05D9 \u05DE\u05D3\u05D5\u05D9\u05E7 \u05D9\u05D5\u05EA\u05E8 \u05DE\u05D4\u05D1\u05D4\u05D9\u05E8\u05D5\u05EA \u05E2\u05E6\u05DE\u05D4. \u05D1\u05EA\u05D5\u05DA \u05D4\u05D8\u05E9\u05D8\u05D5\u05E9 \u05D4\u05D7\u05DC\u05E7\u05D9\u05DD \u05E0\u05E9\u05D0\u05E8\u05D9\u05DD \u05E4\u05EA\u05D5\u05D7\u05D9\u05DD, \u05DC\u05D0 \u05DE\u05D5\u05DB\u05E8\u05E2\u05D9\u05DD, \u05D5\u05DC\u05D0 \u05DE\u05EA\u05D5\u05E8\u05D2\u05DE\u05D9\u05DD \u05E2\u05D3 \u05D4\u05E1\u05D5\u05E3. \u05D6\u05D4\u05D5 \u05DE\u05E8\u05D7\u05D1 \u05D6\u05DE\u05E0\u05D9 \u05D1\u05D9\u05DF \u05D4\u05D9\u05E2\u05DC\u05DE\u05D5\u05EA \u05DC\u05D4\u05D5\u05E4\u05E2\u05D4, \u05D1\u05D9\u05DF \u05DC\u05D4\u05D9\u05E8\u05D0\u05D5\u05EA \u05DC\u05D1\u05D9\u05DF \u05DC\u05D4\u05D9\u05D5\u05EA \u05DE\u05D5\u05D1\u05DF.";
 
-let blurArabicText = "الضبابية ليست نقصًا في الرؤية، بل طريقة أخرى لظهور الحقيقة. أحيانًا لا يكون الشيء غير واضح لأنه بعيد، بل لأنه يحمل أكثر من معنى في الوقت نفسه. بين لغة وأخرى، بين مكان وآخر، تتغيّر الملامح قليلًا، كأن الصورة ترفض أن تثبت على شكل واحد. ما أراه من جهة، قد يبدو مختلفًا من جهة أخرى. وما يبدو مشوشًا للآخرين، قد يكون بالنسبة لي أكثر دقّة من الوضوح نفسه. في الضبابية تبقى الأجزاء مفتوحة، غير محسومة، وغير مترجمة بالكامل. إنها مساحة مؤقتة بين الاختفاء والظهور، بين أن أُرى وأن أُفهم.";
+let blurArabicText = "\u0627\u0644\u0636\u0628\u0627\u0628\u064A\u0629 \u0644\u064A\u0633\u062A \u0646\u0642\u0635\u064B\u0627 \u0641\u064A \u0627\u0644\u0631\u0624\u064A\u0629\u060C \u0628\u0644 \u0637\u0631\u064A\u0642\u0629 \u0623\u062E\u0631\u0649 \u0644\u0638\u0647\u0648\u0631 \u0627\u0644\u062D\u0642\u064A\u0642\u0629. \u0623\u062D\u064A\u0627\u0646\u064B\u0627 \u0644\u0627 \u064A\u0643\u0648\u0646 \u0627\u0644\u0634\u064A\u0621 \u063A\u064A\u0631 \u0648\u0627\u0636\u062D \u0644\u0623\u0646\u0647 \u0628\u0639\u064A\u062F\u060C \u0628\u0644 \u0644\u0623\u0646\u0647 \u064A\u062D\u0645\u0644 \u0623\u0643\u062B\u0631 \u0645\u0646 \u0645\u0639\u0646\u0649 \u0641\u064A \u0627\u0644\u0648\u0642\u062A \u0646\u0641\u0633\u0647. \u0628\u064A\u0646 \u0644\u063A\u0629 \u0648\u0623\u062E\u0631\u0649\u060C \u0628\u064A\u0646 \u0645\u0643\u0627\u0646 \u0648\u0622\u062E\u0631\u060C \u062A\u062A\u063A\u064A\u0651\u0631 \u0627\u0644\u0645\u0644\u0627\u0645\u062D \u0642\u0644\u064A\u0644\u064B\u0627\u060C \u0643\u0623\u0646 \u0627\u0644\u0635\u0648\u0631\u0629 \u062A\u0631\u0641\u0636 \u0623\u0646 \u062A\u062B\u0628\u062A \u0639\u0644\u0649 \u0634\u0643\u0644 \u0648\u0627\u062D\u062F. \u0645\u0627 \u0623\u0631\u0627\u0647 \u0645\u0646 \u062C\u0647\u0629\u060C \u0642\u062F \u064A\u0628\u062F\u0648 \u0645\u062E\u062A\u0644\u0641\u064B\u0627 \u0645\u0646 \u062C\u0647\u0629 \u0623\u062E\u0631\u0649. \u0648\u0645\u0627 \u064A\u0628\u062F\u0648 \u0645\u0634\u0648\u0634\u064B\u0627 \u0644\u0644\u0622\u062E\u0631\u064A\u0646\u060C \u0642\u062F \u064A\u0643\u0648\u0646 \u0628\u0627\u0644\u0646\u0633\u0628\u0629 \u0644\u064A \u0623\u0643\u062B\u0631 \u062F\u0642\u0651\u0629 \u0645\u0646 \u0627\u0644\u0648\u0636\u0648\u062D \u0646\u0641\u0633\u0647. \u0641\u064A \u0627\u0644\u0636\u0628\u0627\u0628\u064A\u0629 \u062A\u0628\u0642\u0649 \u0627\u0644\u0623\u062C\u0632\u0627\u0621 \u0645\u0641\u062A\u0648\u062D\u0629\u060C \u063A\u064A\u0631 \u0645\u062D\u0633\u0648\u0645\u0629\u060C \u0648\u063A\u064A\u0631 \u0645\u062A\u0631\u062C\u0645\u0629 \u0628\u0627\u0644\u0643\u0627\u0645\u0644. \u0625\u0646\u0647\u0627 \u0645\u0633\u0627\u062D\u0629 \u0645\u0624\u0642\u062A\u0629 \u0628\u064A\u0646 \u0627\u0644\u0627\u062E\u062A\u0641\u0627\u0621 \u0648\u0627\u0644\u0638\u0647\u0648\u0631\u060C \u0628\u064A\u0646 \u0623\u0646 \u0623\u064F\u0631\u0649 \u0648\u0623\u0646 \u0623\u064F\u0641\u0647\u0645.";
 
-let homeArabicText = "البيت ليس مكانًا نعود إليه دائمًا، بل طقس يعرفنا قبل أن نسمّيه.\nقد يكون حركة هادئة، عادة تتكرر، أو لحظة تجعل الغربة أخف. هناك، لا يظهر البيت كعنوان، بل كشيء يبقى داخلنا.";
+let homeArabicText = "\u0627\u0644\u0628\u064A\u062A \u0644\u064A\u0633 \u0645\u0643\u0627\u0646\u064B\u0627 \u0646\u0639\u0648\u062F \u0625\u0644\u064A\u0647 \u062F\u0627\u0626\u0645\u064B\u0627\u060C \u0628\u0644 \u0637\u0642\u0633 \u064A\u0639\u0631\u0641\u0646\u0627 \u0642\u0628\u0644 \u0623\u0646 \u0646\u0633\u0645\u0651\u064A\u0647.\n\u0642\u062F \u064A\u0643\u0648\u0646 \u062D\u0631\u0643\u0629 \u0647\u0627\u062F\u0626\u0629\u060C \u0639\u0627\u062F\u0629 \u062A\u062A\u0643\u0631\u0631\u060C \u0623\u0648 \u0644\u062D\u0638\u0629 \u062A\u062C\u0639\u0644 \u0627\u0644\u063A\u0631\u0628\u0629 \u0623\u062E\u0641. \u0647\u0646\u0627\u0643\u060C \u0644\u0627 \u064A\u0638\u0647\u0631 \u0627\u0644\u0628\u064A\u062A \u0643\u0639\u0646\u0648\u0627\u0646\u060C \u0628\u0644 \u0643\u0634\u064A\u0621 \u064A\u0628\u0642\u0649 \u062F\u0627\u062E\u0644\u0646\u0627.";
 
-let homeHebrewText = "בית אינו מקום שאנו חוזרים אליו תמיד, אלא טקס שמכיר אותנו עוד לפני שאנו אפילו קוראים לו בשמו. יכול להיות תנועה שקטה, הרגל חוזר, או רגע שמקל את המרחק מהבית. שאינו מופיע ככתובת, אלא כמשהו שנשאר בתוכנו.";
+let homeHebrewText = "\u05D1\u05D9\u05EA \u05D0\u05D9\u05E0\u05D5 \u05DE\u05E7\u05D5\u05DD \u05E9\u05D0\u05E0\u05D5 \u05D7\u05D5\u05D6\u05E8\u05D9\u05DD \u05D0\u05DC\u05D9\u05D5 \u05EA\u05DE\u05D9\u05D3, \u05D0\u05DC\u05D0 \u05D8\u05E7\u05E1 \u05E9\u05DE\u05DB\u05D9\u05E8 \u05D0\u05D5\u05EA\u05E0\u05D5 \u05E2\u05D5\u05D3 \u05DC\u05E4\u05E0\u05D9 \u05E9\u05D0\u05E0\u05D5 \u05D0\u05E4\u05D9\u05DC\u05D5 \u05E7\u05D5\u05E8\u05D0\u05D9\u05DD \u05DC\u05D5 \u05D1\u05E9\u05DE\u05D5. \u05D9\u05DB\u05D5\u05DC \u05DC\u05D4\u05D9\u05D5\u05EA \u05EA\u05E0\u05D5\u05E2\u05D4 \u05E9\u05E7\u05D8\u05D4, \u05D4\u05E8\u05D2\u05DC \u05D7\u05D5\u05D6\u05E8, \u05D0\u05D5 \u05E8\u05D2\u05E2 \u05E9\u05DE\u05E7\u05DC \u05D0\u05EA \u05D4\u05DE\u05E8\u05D7\u05E7 \u05DE\u05D4\u05D1\u05D9\u05EA. \u05E9\u05D0\u05D9\u05E0\u05D5 \u05DE\u05D5\u05E4\u05D9\u05E2 \u05DB\u05DB\u05EA\u05D5\u05D1\u05EA, \u05D0\u05DC\u05D0 \u05DB\u05DE\u05E9\u05D4\u05D5 \u05E9\u05E0\u05E9\u05D0\u05E8 \u05D1\u05EA\u05D5\u05DB\u05E0\u05D5.";
 
-let belongingArabicText = `الانتماء لا يصلني كاملًا.
-يأتي على هيئة أجزاء:
+let belongingArabicText = `\u0627\u0644\u0627\u0646\u062A\u0645\u0627\u0621 \u0644\u0627 \u064A\u0635\u0644\u0646\u064A \u0643\u0627\u0645\u0644\u064B\u0627.
+\u064A\u0623\u062A\u064A \u0639\u0644\u0649 \u0647\u064A\u0626\u0629 \u0623\u062C\u0632\u0627\u0621:
 
-شيءٌ ورثته
-قبل أن أعرف كيف أسمّيه،
-وشيءٌ بنيته
-كلّما ابتعدت،
-وشيءٌ يعود إليّ
-كلّما ظننت أنّني تجاوزته.
+\u0634\u064A\u0621\u064C \u0648\u0631\u062B\u062A\u0647
+\u0642\u0628\u0644 \u0623\u0646 \u0623\u0639\u0631\u0641 \u0643\u064A\u0641 \u0623\u0633\u0645\u0651\u064A\u0647\u060C
+\u0648\u0634\u064A\u0621\u064C \u0628\u0646\u064A\u062A\u0647
+\u0643\u0644\u0651\u0645\u0627 \u0627\u0628\u062A\u0639\u062F\u062A\u060C
+\u0648\u0634\u064A\u0621\u064C \u064A\u0639\u0648\u062F \u0625\u0644\u064A\u0651
+\u0643\u0644\u0651\u0645\u0627 \u0638\u0646\u0646\u062A \u0623\u0646\u0651\u0646\u064A \u062A\u062C\u0627\u0648\u0632\u062A\u0647.
 
-أعيش بين أماكن
-لا يلغي أحدها الآخر،
-لكنّها لا تجتمع
-في مكانٍ واحد.
+\u0623\u0639\u064A\u0634 \u0628\u064A\u0646 \u0623\u0645\u0627\u0643\u0646
+\u0644\u0627 \u064A\u0644\u063A\u064A \u0623\u062D\u062F\u0647\u0627 \u0627\u0644\u0622\u062E\u0631\u060C
+\u0644\u0643\u0646\u0651\u0647\u0627 \u0644\u0627 \u062A\u062C\u062A\u0645\u0639
+\u0641\u064A \u0645\u0643\u0627\u0646\u064D \u0648\u0627\u062D\u062F.
 
-في كلّ مكان
-أترك نسخةً منّي،
-وفي كلّ عودة
-أكتشف أنّني تغيّرت.
+\u0641\u064A \u0643\u0644\u0651 \u0645\u0643\u0627\u0646
+\u0623\u062A\u0631\u0643 \u0646\u0633\u062E\u0629\u064B \u0645\u0646\u0651\u064A\u060C
+\u0648\u0641\u064A \u0643\u0644\u0651 \u0639\u0648\u062F\u0629
+\u0623\u0643\u062A\u0634\u0641 \u0623\u0646\u0651\u0646\u064A \u062A\u063A\u064A\u0651\u0631\u062A.
 
-لا أبحث عن جهةٍ أختارها،
-بل عن مساحةٍ تتّسع
-لكلّ ما أحمله،
-من دون أن تطلب منّي
-أن أشرح
-أيّ جزءٍ منّي هو الحقيقي.`;
+\u0644\u0627 \u0623\u0628\u062D\u062B \u0639\u0646 \u062C\u0647\u0629\u064D \u0623\u062E\u062A\u0627\u0631\u0647\u0627\u060C
+\u0628\u0644 \u0639\u0646 \u0645\u0633\u0627\u062D\u0629\u064D \u062A\u062A\u0651\u0633\u0639
+\u0644\u0643\u0644\u0651 \u0645\u0627 \u0623\u062D\u0645\u0644\u0647\u060C
+\u0645\u0646 \u062F\u0648\u0646 \u0623\u0646 \u062A\u0637\u0644\u0628 \u0645\u0646\u0651\u064A
+\u0623\u0646 \u0623\u0634\u0631\u062D
+\u0623\u064A\u0651 \u062C\u0632\u0621\u064D \u0645\u0646\u0651\u064A \u0647\u0648 \u0627\u0644\u062D\u0642\u064A\u0642\u064A.`;
 
-let belongingHebrewText = `השייכות אינה מגיעה אליי שלמה.
-היא מגיעה בחלקים:
+let belongingHebrewText = `\u05D4\u05E9\u05D9\u05D9\u05DB\u05D5\u05EA \u05D0\u05D9\u05E0\u05D4 \u05DE\u05D2\u05D9\u05E2\u05D4 \u05D0\u05DC\u05D9\u05D9 \u05E9\u05DC\u05DE\u05D4.
+\u05D4\u05D9\u05D0 \u05DE\u05D2\u05D9\u05E2\u05D4 \u05D1\u05D7\u05DC\u05E7\u05D9\u05DD:
 
-משהו שירשתי
-עוד לפני שידעתי לקרוא לו בשם,
-משהו שבניתי
-ככל שהתרחקתי,
-ומשהו שחוזר אליי
-בכל פעם שאני חושבת שכבר עברתי הלאה.
+\u05DE\u05E9\u05D4\u05D5 \u05E9\u05D9\u05E8\u05E9\u05EA\u05D9
+\u05E2\u05D5\u05D3 \u05DC\u05E4\u05E0\u05D9 \u05E9\u05D9\u05D3\u05E2\u05EA\u05D9 \u05DC\u05E7\u05E8\u05D5\u05D0 \u05DC\u05D5 \u05D1\u05E9\u05DD,
+\u05DE\u05E9\u05D4\u05D5 \u05E9\u05D1\u05E0\u05D9\u05EA\u05D9
+\u05DB\u05DB\u05DC \u05E9\u05D4\u05EA\u05E8\u05D7\u05E7\u05EA\u05D9,
+\u05D5\u05DE\u05E9\u05D4\u05D5 \u05E9\u05D7\u05D5\u05D6\u05E8 \u05D0\u05DC\u05D9\u05D9
+\u05D1\u05DB\u05DC \u05E4\u05E2\u05DD \u05E9\u05D0\u05E0\u05D9 \u05D7\u05D5\u05E9\u05D1\u05EA \u05E9\u05DB\u05D1\u05E8 \u05E2\u05D1\u05E8\u05EA\u05D9 \u05D4\u05DC\u05D0\u05D4.
 
-אני חיה בין מקומות
-שאינם מבטלים זה את זה,
-אבל גם אינם מתחברים
-למקום אחד.
+\u05D0\u05E0\u05D9 \u05D7\u05D9\u05D4 \u05D1\u05D9\u05DF \u05DE\u05E7\u05D5\u05DE\u05D5\u05EA
+\u05E9\u05D0\u05D9\u05E0\u05DD \u05DE\u05D1\u05D8\u05DC\u05D9\u05DD \u05D6\u05D4 \u05D0\u05EA \u05D6\u05D4,
+\u05D0\u05D1\u05DC \u05D2\u05DD \u05D0\u05D9\u05E0\u05DD \u05DE\u05EA\u05D7\u05D1\u05E8\u05D9\u05DD
+\u05DC\u05DE\u05E7\u05D5\u05DD \u05D0\u05D7\u05D3.
 
-בכל מקום
-אני משאירה גרסה של עצמי,
-ובכל חזרה
-אני מגלה שהשתניתי.
+\u05D1\u05DB\u05DC \u05DE\u05E7\u05D5\u05DD
+\u05D0\u05E0\u05D9 \u05DE\u05E9\u05D0\u05D9\u05E8\u05D4 \u05D2\u05E8\u05E1\u05D4 \u05E9\u05DC \u05E2\u05E6\u05DE\u05D9,
+\u05D5\u05D1\u05DB\u05DC \u05D7\u05D6\u05E8\u05D4
+\u05D0\u05E0\u05D9 \u05DE\u05D2\u05DC\u05D4 \u05E9\u05D4\u05E9\u05EA\u05E0\u05D9\u05EA\u05D9.
 
-אני לא מחפשת צד לבחור בו,
-אלא מרחב שיוכל להכיל
-את כל מה שאני נושאת,
-בלי לדרוש ממני
-להסביר
-איזה חלק בי הוא האמיתי.`;
+\u05D0\u05E0\u05D9 \u05DC\u05D0 \u05DE\u05D7\u05E4\u05E9\u05EA \u05E6\u05D3 \u05DC\u05D1\u05D7\u05D5\u05E8 \u05D1\u05D5,
+\u05D0\u05DC\u05D0 \u05DE\u05E8\u05D7\u05D1 \u05E9\u05D9\u05D5\u05DB\u05DC \u05DC\u05D4\u05DB\u05D9\u05DC
+\u05D0\u05EA \u05DB\u05DC \u05DE\u05D4 \u05E9\u05D0\u05E0\u05D9 \u05E0\u05D5\u05E9\u05D0\u05EA,
+\u05D1\u05DC\u05D9 \u05DC\u05D3\u05E8\u05D5\u05E9 \u05DE\u05DE\u05E0\u05D9
+\u05DC\u05D4\u05E1\u05D1\u05D9\u05E8
+\u05D0\u05D9\u05D6\u05D4 \u05D7\u05DC\u05E7 \u05D1\u05D9 \u05D4\u05D5\u05D0 \u05D4\u05D0\u05DE\u05D9\u05EA\u05D9.`;
 
-let clothesArabicText = "كثيرًا ما يقرأني الناس من خلال مظهري قبل أن يعرفوا أي شيء عني. يخمّنون ديني، وأصلي، وما إذا كنت أبدو عربية بما يكفي. بين ما قد يتوقعه الناس وبين الطريقة التي أتحرك بها فعلًا في العالم، يصبح اللباس مساحة يحاول الآخرون من خلالها أن يعرّفوني.";
+let clothesArabicText = "\u0643\u062B\u064A\u0631\u064B\u0627 \u0645\u0627 \u064A\u0642\u0631\u0623\u0646\u064A \u0627\u0644\u0646\u0627\u0633 \u0645\u0646 \u062E\u0644\u0627\u0644 \u0645\u0638\u0647\u0631\u064A \u0642\u0628\u0644 \u0623\u0646 \u064A\u0639\u0631\u0641\u0648\u0627 \u0623\u064A \u0634\u064A\u0621 \u0639\u0646\u064A. \u064A\u062E\u0645\u0651\u0646\u0648\u0646 \u062F\u064A\u0646\u064A\u060C \u0648\u0623\u0635\u0644\u064A\u060C \u0648\u0645\u0627 \u0625\u0630\u0627 \u0643\u0646\u062A \u0623\u0628\u062F\u0648 \u0639\u0631\u0628\u064A\u0629 \u0628\u0645\u0627 \u064A\u0643\u0641\u064A. \u0628\u064A\u0646 \u0645\u0627 \u0642\u062F \u064A\u062A\u0648\u0642\u0639\u0647 \u0627\u0644\u0646\u0627\u0633 \u0648\u0628\u064A\u0646 \u0627\u0644\u0637\u0631\u064A\u0642\u0629 \u0627\u0644\u062A\u064A \u0623\u062A\u062D\u0631\u0643 \u0628\u0647\u0627 \u0641\u0639\u0644\u064B\u0627 \u0641\u064A \u0627\u0644\u0639\u0627\u0644\u0645\u060C \u064A\u0635\u0628\u062D \u0627\u0644\u0644\u0628\u0627\u0633 \u0645\u0633\u0627\u062D\u0629 \u064A\u062D\u0627\u0648\u0644 \u0627\u0644\u0622\u062E\u0631\u0648\u0646 \u0645\u0646 \u062E\u0644\u0627\u0644\u0647\u0627 \u0623\u0646 \u064A\u0639\u0631\u0651\u0641\u0648\u0646\u064A.";
 
-let clothesHebrewText = "לעיתים קרובות אנשים קוראים אותי דרך המראה שלי עוד לפני שהם יודעים עליי משהו. הם מנחשים את הדת שלי, את המוצא שלי, ואם אני נראית מספיק ערבייה. בין מה שאנשים מצפים לראות לבין האופן שבו אני באמת נעה בעולם, הלבוש הופך למרחב שדרכו אחרים מנסים להגדיר אותי.";
+let clothesHebrewText = "\u05DC\u05E2\u05D9\u05EA\u05D9\u05DD \u05E7\u05E8\u05D5\u05D1\u05D5\u05EA \u05D0\u05E0\u05E9\u05D9\u05DD \u05E7\u05D5\u05E8\u05D0\u05D9\u05DD \u05D0\u05D5\u05EA\u05D9 \u05D3\u05E8\u05DA \u05D4\u05DE\u05E8\u05D0\u05D4 \u05E9\u05DC\u05D9 \u05E2\u05D5\u05D3 \u05DC\u05E4\u05E0\u05D9 \u05E9\u05D4\u05DD \u05D9\u05D5\u05D3\u05E2\u05D9\u05DD \u05E2\u05DC\u05D9\u05D9 \u05DE\u05E9\u05D4\u05D5. \u05D4\u05DD \u05DE\u05E0\u05D7\u05E9\u05D9\u05DD \u05D0\u05EA \u05D4\u05D3\u05EA \u05E9\u05DC\u05D9, \u05D0\u05EA \u05D4\u05DE\u05D5\u05E6\u05D0 \u05E9\u05DC\u05D9, \u05D5\u05D0\u05DD \u05D0\u05E0\u05D9 \u05E0\u05E8\u05D0\u05D9\u05EA \u05DE\u05E1\u05E4\u05D9\u05E7 \u05E2\u05E8\u05D1\u05D9\u05D9\u05D4. \u05D1\u05D9\u05DF \u05DE\u05D4 \u05E9\u05D0\u05E0\u05E9\u05D9\u05DD \u05DE\u05E6\u05E4\u05D9\u05DD \u05DC\u05E8\u05D0\u05D5\u05EA \u05DC\u05D1\u05D9\u05DF \u05D4\u05D0\u05D5\u05E4\u05DF \u05E9\u05D1\u05D5 \u05D0\u05E0\u05D9 \u05D1\u05D0\u05DE\u05EA \u05E0\u05E2\u05D4 \u05D1\u05E2\u05D5\u05DC\u05DD, \u05D4\u05DC\u05D1\u05D5\u05E9 \u05D4\u05D5\u05E4\u05DA \u05DC\u05DE\u05E8\u05D7\u05D1 \u05E9\u05D3\u05E8\u05DB\u05D5 \u05D0\u05D7\u05E8\u05D9\u05DD \u05DE\u05E0\u05E1\u05D9\u05DD \u05DC\u05D4\u05D2\u05D3\u05D9\u05E8 \u05D0\u05D5\u05EA\u05D9.";
 
 const MEMORY_SOURCE_TEXT = `
-זיכרון הוא וילון התלוי מצד אחד; מה שנקבע למעלה דומה למקור שלא בחרנו, ומה שרועד למטה דומה לנו כשאנחנו מנסים לבנות את עצמנו משאריות מפוזרות. אני זוכרת בשתי שפות, ומאבדת את המשמעות ביניהן; כי הזיכרון שלי אינו רק מה שקרה, אלא מה שנותר לנוע בתוכי בכל פעם שאני מנסה לומר מי אני.
+\u05D6\u05D9\u05DB\u05E8\u05D5\u05DF \u05D4\u05D5\u05D0 \u05D5\u05D9\u05DC\u05D5\u05DF \u05D4\u05EA\u05DC\u05D5\u05D9 \u05DE\u05E6\u05D3 \u05D0\u05D7\u05D3; \u05DE\u05D4 \u05E9\u05E0\u05E7\u05D1\u05E2 \u05DC\u05DE\u05E2\u05DC\u05D4 \u05D3\u05D5\u05DE\u05D4 \u05DC\u05DE\u05E7\u05D5\u05E8 \u05E9\u05DC\u05D0 \u05D1\u05D7\u05E8\u05E0\u05D5, \u05D5\u05DE\u05D4 \u05E9\u05E8\u05D5\u05E2\u05D3 \u05DC\u05DE\u05D8\u05D4 \u05D3\u05D5\u05DE\u05D4 \u05DC\u05E0\u05D5 \u05DB\u05E9\u05D0\u05E0\u05D7\u05E0\u05D5 \u05DE\u05E0\u05E1\u05D9\u05DD \u05DC\u05D1\u05E0\u05D5\u05EA \u05D0\u05EA \u05E2\u05E6\u05DE\u05E0\u05D5 \u05DE\u05E9\u05D0\u05E8\u05D9\u05D5\u05EA \u05DE\u05E4\u05D5\u05D6\u05E8\u05D5\u05EA. \u05D0\u05E0\u05D9 \u05D6\u05D5\u05DB\u05E8\u05EA \u05D1\u05E9\u05EA\u05D9 \u05E9\u05E4\u05D5\u05EA, \u05D5\u05DE\u05D0\u05D1\u05D3\u05EA \u05D0\u05EA \u05D4\u05DE\u05E9\u05DE\u05E2\u05D5\u05EA \u05D1\u05D9\u05E0\u05D9\u05D4\u05DF; \u05DB\u05D9 \u05D4\u05D6\u05D9\u05DB\u05E8\u05D5\u05DF \u05E9\u05DC\u05D9 \u05D0\u05D9\u05E0\u05D5 \u05E8\u05E7 \u05DE\u05D4 \u05E9\u05E7\u05E8\u05D4, \u05D0\u05DC\u05D0 \u05DE\u05D4 \u05E9\u05E0\u05D5\u05EA\u05E8 \u05DC\u05E0\u05D5\u05E2 \u05D1\u05EA\u05D5\u05DB\u05D9 \u05D1\u05DB\u05DC \u05E4\u05E2\u05DD \u05E9\u05D0\u05E0\u05D9 \u05DE\u05E0\u05E1\u05D4 \u05DC\u05D5\u05DE\u05E8 \u05DE\u05D9 \u05D0\u05E0\u05D9.
 
-الذاكرة ستارة معلقة من طرف واحد؛ ما ثبت في الأعلى يشبه أصلا لا نختاره، وما يرتجف في الأسفل يشبهنا ونحن نحاول أن نبني أنفسنا من بقايا متفرقة. أتذكر بلغتين، وأفقد المعنى بينهما؛ فذاكرتي ليست ما حدث فقط، بل ما ظل يتحرك داخلي كلما حاولت أن أقول من أنا.
+\u0627\u0644\u0630\u0627\u0643\u0631\u0629 \u0633\u062A\u0627\u0631\u0629 \u0645\u0639\u0644\u0642\u0629 \u0645\u0646 \u0637\u0631\u0641 \u0648\u0627\u062D\u062F\u061B \u0645\u0627 \u062B\u0628\u062A \u0641\u064A \u0627\u0644\u0623\u0639\u0644\u0649 \u064A\u0634\u0628\u0647 \u0623\u0635\u0644\u0627 \u0644\u0627 \u0646\u062E\u062A\u0627\u0631\u0647\u060C \u0648\u0645\u0627 \u064A\u0631\u062A\u062C\u0641 \u0641\u064A \u0627\u0644\u0623\u0633\u0641\u0644 \u064A\u0634\u0628\u0647\u0646\u0627 \u0648\u0646\u062D\u0646 \u0646\u062D\u0627\u0648\u0644 \u0623\u0646 \u0646\u0628\u0646\u064A \u0623\u0646\u0641\u0633\u0646\u0627 \u0645\u0646 \u0628\u0642\u0627\u064A\u0627 \u0645\u062A\u0641\u0631\u0642\u0629. \u0623\u062A\u0630\u0643\u0631 \u0628\u0644\u063A\u062A\u064A\u0646\u060C \u0648\u0623\u0641\u0642\u062F \u0627\u0644\u0645\u0639\u0646\u0649 \u0628\u064A\u0646\u0647\u0645\u0627\u061B \u0641\u0630\u0627\u0643\u0631\u062A\u064A \u0644\u064A\u0633\u062A \u0645\u0627 \u062D\u062F\u062B \u0641\u0642\u0637\u060C \u0628\u0644 \u0645\u0627 \u0638\u0644 \u064A\u062A\u062D\u0631\u0643 \u062F\u0627\u062E\u0644\u064A \u0643\u0644\u0645\u0627 \u062D\u0627\u0648\u0644\u062A \u0623\u0646 \u0623\u0642\u0648\u0644 \u0645\u0646 \u0623\u0646\u0627.
 `;
 
 let arabicTargetLabels = [
-  "حدود",
-  "بيت",
-  "انعكاس",
-  "ذاكرة",
-  "لغة",
-  "انتماء"
+  "\u0628\u064A\u062A",
+  "\u0627\u0646\u0639\u0643\u0627\u0633",
+  "\u0644\u063A\u0629",
+  "\u0627\u0646\u062A\u0645\u0627\u0621"
 ];
 
 let hebrewTargetLabels = [
-  "גבול",
-  "בית",
-  "השתקפות",
-  "זיכרון",
-  "שפה",
-  "שייכות"
+  "\u05D1\u05D9\u05EA",
+  "\u05D4\u05E9\u05EA\u05E7\u05E4\u05D5\u05EA",
+  "\u05E9\u05E4\u05D4",
+  "\u05E9\u05D9\u05D9\u05DB\u05D5\u05EA"
 ];
 
 let targetWords = arabicTargetLabels.concat(hebrewTargetLabels);
 
 let coreWordPairs = [
-  { hebrew: "גבול", arabic: "حدود" },
-  { hebrew: "בית", arabic: "بيت" },
-  { hebrew: "השתקפות", arabic: "انعكاس" },
-  { hebrew: "זיכרון", arabic: "ذاكرة" },
-  { hebrew: "שפה", arabic: "لغة" },
-  { hebrew: "שייכות", arabic: "انتماء" }
+  { hebrew: "\u05D1\u05D9\u05EA", arabic: "\u0628\u064A\u062A" },
+  { hebrew: "\u05D4\u05E9\u05EA\u05E7\u05E4\u05D5\u05EA", arabic: "\u0627\u0646\u0639\u0643\u0627\u0633" },
+  { hebrew: "\u05E9\u05E4\u05D4", arabic: "\u0644\u063A\u0629" },
+  { hebrew: "\u05E9\u05D9\u05D9\u05DB\u05D5\u05EA", arabic: "\u0627\u0646\u062A\u0645\u0627\u0621" }
+];
+
+// The header keeps the complete six-word conceptual sequence. Border and
+// Memory are deliberately navigation-only labels: they are not generated in
+// the searchable grid and their screens cannot be opened in this version.
+let navigationWordPairs = [
+  { hebrew: "\u05D2\u05D1\u05D5\u05DC", arabic: "\u062D\u062F\u0648\u062F", enabled: false },
+  { hebrew: "\u05D1\u05D9\u05EA", arabic: "\u0628\u064A\u062A", enabled: true },
+  { hebrew: "\u05D4\u05E9\u05EA\u05E7\u05E4\u05D5\u05EA", arabic: "\u0627\u0646\u0639\u0643\u0627\u0633", enabled: true },
+  { hebrew: "\u05D6\u05D9\u05DB\u05E8\u05D5\u05DF", arabic: "\u0630\u0627\u0643\u0631\u0629", enabled: false },
+  { hebrew: "\u05E9\u05E4\u05D4", arabic: "\u0644\u063A\u0629", enabled: true },
+  { hebrew: "\u05E9\u05D9\u05D9\u05DB\u05D5\u05EA", arabic: "\u0627\u0646\u062A\u0645\u0627\u0621", enabled: true }
 ];
 
 
@@ -1259,19 +1589,19 @@ let introWords = [
 ];
 
 let fillerLetters = [
-  "א","ב","ג","ד","ה","ו","ז","ח","ט","י","כ","ל","מ","נ","ס","ע","פ","צ","ק","ר","ש","ת","ם","ן","ף","ץ",
-  "ا","ب","ت","ث","ج","ح","خ","د","ذ","ر","ز","س","ش","ص","ض","ط","ظ","ع","غ","ف","ق","ك","ل","م","ن","ه","و","ي","ء","أ","إ","ة","ى"
+  "\u05D0","\u05D1","\u05D2","\u05D3","\u05D4","\u05D5","\u05D6","\u05D7","\u05D8","\u05D9","\u05DB","\u05DC","\u05DE","\u05E0","\u05E1","\u05E2","\u05E4","\u05E6","\u05E7","\u05E8","\u05E9","\u05EA","\u05DD","\u05DF","\u05E3","\u05E5",
+  "\u0627","\u0628","\u062A","\u062B","\u062C","\u062D","\u062E","\u062F","\u0630","\u0631","\u0632","\u0633","\u0634","\u0635","\u0636","\u0637","\u0638","\u0639","\u063A","\u0641","\u0642","\u0643","\u0644","\u0645","\u0646","\u0647","\u0648","\u064A","\u0621","\u0623","\u0625","\u0629","\u0649"
 ];
 
 const languageMorphHebrewLetters = [
-  "א", "ב", "ג", "ד", "ה", "ו", "ז", "ח", "ט", "י", "כ", "ל", "מ",
-  "נ", "ס", "ע", "פ", "צ", "ק", "ר", "ש", "ת", "ם", "ן", "ף", "ץ"
+  "\u05D0", "\u05D1", "\u05D2", "\u05D3", "\u05D4", "\u05D5", "\u05D6", "\u05D7", "\u05D8", "\u05D9", "\u05DB", "\u05DC", "\u05DE",
+  "\u05E0", "\u05E1", "\u05E2", "\u05E4", "\u05E6", "\u05E7", "\u05E8", "\u05E9", "\u05EA", "\u05DD", "\u05DF", "\u05E3", "\u05E5"
 ];
 
 const languageMorphArabicLetters = [
-  "ا", "ب", "ت", "ث", "ج", "ح", "خ", "د", "ذ", "ر", "ز", "س", "ش",
-  "ص", "ض", "ط", "ظ", "ع", "غ", "ف", "ق", "ك", "ل", "م", "ن", "ه",
-  "و", "ي", "ء", "أ", "إ", "ة", "ى"
+  "\u0627", "\u0628", "\u062A", "\u062B", "\u062C", "\u062D", "\u062E", "\u062F", "\u0630", "\u0631", "\u0632", "\u0633", "\u0634",
+  "\u0635", "\u0636", "\u0637", "\u0638", "\u0639", "\u063A", "\u0641", "\u0642", "\u0643", "\u0644", "\u0645", "\u0646", "\u0647",
+  "\u0648", "\u064A", "\u0621", "\u0623", "\u0625", "\u0629", "\u0649"
 ];
 
 
@@ -1318,6 +1648,30 @@ function setup() {
     "signdi.png",
     function() { console.log("OK: loaded signdi.png"); },
     function() { console.log("MISSING FILE: signdi.png (put it in the same folder as sketch.js)"); }
+  );
+
+  belongingPhotoFlag = loadImage(
+    "druzeflag.jpg",
+    function() { console.log("OK: loaded druzeflag.jpg"); },
+    function() { console.log("MISSING FILE: druzeflag.jpg"); }
+  );
+
+  belongingPhotoWoman = loadImage(
+    "sis.png",
+    function() { console.log("OK: loaded sis.png"); },
+    function() { console.log("MISSING FILE: sis.png"); }
+  );
+
+  belongingPhotoStatue = loadImage(
+    "statue.jpg",
+    function() { console.log("OK: loaded statue.jpg"); },
+    function() { console.log("MISSING FILE: statue.jpg"); }
+  );
+
+  belongingPhotoFamily = loadImage(
+    "family-field.png",
+    function() { console.log("OK: loaded family-field.png"); },
+    function() { console.log("MISSING FILE: family-field.png"); }
   );
 
   pixelDensity(getSharpRenderDensity());
@@ -1427,7 +1781,7 @@ function draw() {
         updateMemoryPhysics(delta);
       }
     } catch (err) {
-      console.error("Memory Curtain crashed while updating — see the error above/below this line:", err);
+      console.error("Memory Curtain crashed while updating \u2014 see the error above/below this line:", err);
       memoryPopupOpen = false;
     }
   }
@@ -1464,7 +1818,7 @@ function draw() {
       drawMemoryCode();
       drawMemoryCurtainHolder();
     } catch (err) {
-      console.error("Memory Curtain crashed while drawing — see the error above/below this line:", err);
+      console.error("Memory Curtain crashed while drawing \u2014 see the error above/below this line:", err);
       memoryPopupOpen = false;
     }
   }
@@ -1791,21 +2145,12 @@ function updateGridAnimation() {
   const elapsed = now - gridAnimationStartTime;
 
   if (!languageMorphFinalStarted) {
-    if (!languageMorphSettling) {
-      updateLanguageMorphRandomLetters(now);
+    updateLanguageMorphRandomLetters(now);
 
-      if (elapsed >= LANGUAGE_MORPH_CHANGE_DURATION) {
-        languageMorphSettling = true;
-        beginLanguageMorphSettling();
-      }
-    } else {
-      let settled = updateLanguageMorphSettling(now);
-
-      if (settled) {
-        languageMorphFinalStarted = true;
-        languageMorphFinalStartTime = now;
-        prepareLanguageMorphFinalGrid(now);
-      }
+    if (elapsed >= LANGUAGE_MORPH_CHANGE_DURATION) {
+      languageMorphFinalStarted = true;
+      languageMorphFinalStartTime = now;
+      prepareLanguageMorphFinalGrid(now);
     }
 
     return;
@@ -1850,7 +2195,7 @@ function triggerLanguageRearrange() {
     );
   }
 
-  // Start the copied casino-like crossfade animation in every fixed grid slot.
+  // Start the supplied 30-second independent opacity-crossfade animation in every fixed grid slot.
   createLanguageMorphGrid();
   currentSelection = [];
   animatingGridChange = true;
@@ -2004,18 +2349,16 @@ function settleLanguageMorphState(state, now) {
   return true;
 }
 
-function prepareLanguageMorphFinalLetter(state, finalLetter, now, row, col) {
+function prepareLanguageMorphFinalLetter(state, finalLetter, now) {
   if (!state) return;
 
   state.finalizing = true;
   state.finalOutgoingLetter = state.currentLetter;
   state.finalLetter = finalLetter || state.currentLetter;
-
-  // A short deterministic stagger keeps the landing fluid without changing
-  // opacity or showing merged glyphs.
-  state.finalTransitionStart =
-    now + ((row * 11 + col * 7) % 10) * 20;
-  state.finalTransitionDuration = 690;
+  state.finalTransitionStart = now;
+  state.finalTransitionDuration = LANGUAGE_MORPH_FINAL_DURATION;
+  state.waiting = false;
+  state.transitioning = true;
 }
 
 function prepareLanguageMorphFinalGrid(now) {
@@ -2027,17 +2370,13 @@ function prepareLanguageMorphFinalGrid(now) {
       prepareLanguageMorphFinalLetter(
         cell.hebrew,
         nextHebrewGridRows[r] && nextHebrewGridRows[r][c],
-        now,
-        r,
-        c
+        now
       );
 
       prepareLanguageMorphFinalLetter(
         cell.arabic,
         nextArabicGridRows[r] && nextArabicGridRows[r][c],
-        now,
-        r,
-        c
+        now
       );
     }
   }
@@ -2137,56 +2476,29 @@ function drawLanguageMorphChangingLetter(
   if (!state || alphaLimit <= 1) return;
 
   if (state.finalizing) {
-    const rawFinalProgress = constrain(
+    const progress = constrain(
       (now - state.finalTransitionStart) /
         max(1, state.finalTransitionDuration),
       0,
       1
     );
+    const eased = progress * progress * (3 - 2 * progress);
 
-    if (state.finalOutgoingLetter === state.finalLetter) {
-      drawLanguageMorphLetter(
-        state.finalLetter,
-        x,
-        y,
-        letterColor,
-        alphaLimit
-      );
-      return;
-    }
-
-    const landingProgress = 1 - Math.pow(1 - rawFinalProgress, 3);
-    const travel = stepY * 0.96;
-
-    drawingContext.save();
-    drawingContext.beginPath();
-    drawingContext.rect(
-      x - stepX * 0.48,
-      y - stepY * 0.48,
-      stepX * 0.96,
-      stepY * 0.96
-    );
-    drawingContext.clip();
-
-    // Both letters stay at full opacity. The old one leaves upward while
-    // the final grid letter enters from below and lands exactly at y.
     drawLanguageMorphLetter(
       state.finalOutgoingLetter,
       x,
-      y - travel * landingProgress,
+      y,
       letterColor,
-      alphaLimit
+      alphaLimit * (1 - eased)
     );
 
     drawLanguageMorphLetter(
       state.finalLetter,
       x,
-      y + travel * (1 - landingProgress),
+      y,
       letterColor,
-      alphaLimit
+      alphaLimit * eased
     );
-
-    drawingContext.restore();
     return;
   }
 
@@ -2860,7 +3172,9 @@ function setupHomeScreenDom() {
 
     .pagmar-home-scroll-reveal {
       opacity: 0;
-      will-change: opacity, transform, clip-path;
+      will-change: opacity, transform;
+      backface-visibility: hidden;
+      transform: translate3d(0, 0, 0);
     }
 
     /* These elements are animated directly by scroll progress in JavaScript. */
@@ -2951,7 +3265,7 @@ function setupHomeScreenDom() {
 
   homeScreenRoot = document.createElement("section");
   homeScreenRoot.id = "pagmar-home-screen";
-  homeScreenRoot.setAttribute("aria-label", "בית / البيت");
+  homeScreenRoot.setAttribute("aria-label", "\u05D1\u05D9\u05EA / \u0627\u0644\u0628\u064A\u062A");
 
   const intro = document.createElement("div");
   intro.className = "pagmar-home-intro";
@@ -3044,9 +3358,15 @@ function setupHomeScreenDom() {
   homeScreenRoot.appendChild(intro);
   homeScreenRoot.appendChild(videos);
   document.body.appendChild(homeScreenRoot);
+  installPagmarSmoothWheelScroll(homeScreenRoot);
 
   const scrollToVideos = function() {
-    videos.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (!homeScreenRoot) return;
+    const rootRect = homeScreenRoot.getBoundingClientRect();
+    const videosRect = videos.getBoundingClientRect();
+    const destination =
+      homeScreenRoot.scrollTop + videosRect.top - rootRect.top;
+    setPagmarSmoothScrollPosition(homeScreenRoot, destination, false);
   };
 
   function pauseHomeInteractionGuide() {
@@ -3164,14 +3484,31 @@ function randomizeHomePhotoPlacement() {
   );
 }
 
-function getHomeScrollRevealProgress(item) {
-  if (!homeScreenRoot || !item) return 0;
+function measureHomeScrollRevealItems() {
+  if (!homeScreenRoot || !homeScreenRevealItems.length) {
+    homeScreenRevealMetrics = [];
+    return;
+  }
 
-  const rect = item.getBoundingClientRect();
-  const viewportHeight = homeScreenRoot.clientHeight || window.innerHeight || 1;
+  const rootRect = homeScreenRoot.getBoundingClientRect();
+  const scrollTop = homeScreenRoot.scrollTop;
+
+  homeScreenRevealMetrics = homeScreenRevealItems.map(function(item) {
+    const rect = item.getBoundingClientRect();
+    return {
+      item: item,
+      top: rect.top - rootRect.top + scrollTop
+    };
+  });
+}
+
+function getHomeScrollRevealProgress(metric, scrollTop, viewportHeight) {
+  if (!metric) return 0;
+
+  const itemTopInViewport = metric.top - scrollTop;
   const startY = viewportHeight * 0.92;
   const endY = viewportHeight * 0.28;
-  const raw = (startY - rect.top) / Math.max(1, startY - endY);
+  const raw = (startY - itemTopInViewport) / Math.max(1, startY - endY);
   return constrain(raw, 0, 1);
 }
 
@@ -3181,56 +3518,69 @@ function applyHomeScrollRevealProgress(item, progress) {
   item.style.opacity = progress.toFixed(3);
 
   if (item.classList.contains("pagmar-home-video-first")) {
-    const translateY = 44 * (1 - progress);
-    const scale = 0.93 + 0.07 * progress;
-    const insetY = 14 * (1 - progress);
-    item.style.transform = `translateY(${translateY.toFixed(1)}px) scale(${scale.toFixed(4)})`;
-    item.style.clipPath = `inset(${insetY.toFixed(2)}% 0 ${insetY.toFixed(2)}% 0)`;
+    const translateY = 38 * (1 - progress);
+    const scale = 0.94 + 0.06 * progress;
+    item.style.transform =
+      `translate3d(0, ${translateY.toFixed(1)}px, 0) scale(${scale.toFixed(4)})`;
     return;
   }
 
   if (item.classList.contains("pagmar-home-video-second")) {
-    const translateX = 120 * (1 - progress);
+    const translateX = 88 * (1 - progress);
     const scale = 0.985 + 0.015 * progress;
-    const insetLeft = 18 * (1 - progress);
-    item.style.transform = `translateX(${translateX.toFixed(1)}px) scale(${scale.toFixed(4)})`;
-    item.style.clipPath = `inset(0 0 0 ${insetLeft.toFixed(2)}%)`;
+    item.style.transform =
+      `translate3d(${translateX.toFixed(1)}px, 0, 0) scale(${scale.toFixed(4)})`;
     return;
   }
 
-  item.style.clipPath = "none";
-
   if (item.classList.contains("pagmar-home-photo-row-tree")) {
-    const tx = -84 * (1 - progress);
-    const ty = 54 * (1 - progress);
-    item.style.transform = `translate(${tx.toFixed(1)}px, ${ty.toFixed(1)}px)`;
+    const tx = -68 * (1 - progress);
+    const ty = 42 * (1 - progress);
+    item.style.transform =
+      `translate3d(${tx.toFixed(1)}px, ${ty.toFixed(1)}px, 0)`;
     return;
   }
 
   if (item.classList.contains("pagmar-home-photo-row-table")) {
-    const tx = 92 * (1 - progress);
-    const ty = 42 * (1 - progress);
-    item.style.transform = `translate(${tx.toFixed(1)}px, ${ty.toFixed(1)}px)`;
+    const tx = 72 * (1 - progress);
+    const ty = 34 * (1 - progress);
+    item.style.transform =
+      `translate3d(${tx.toFixed(1)}px, ${ty.toFixed(1)}px, 0)`;
     return;
   }
 
   if (item.classList.contains("pagmar-home-photo-row-family")) {
-    const ty = 96 * (1 - progress);
-    const scale = 0.955 + 0.045 * progress;
-    item.style.transform = `translateY(${ty.toFixed(1)}px) scale(${scale.toFixed(4)})`;
+    const ty = 72 * (1 - progress);
+    const scale = 0.965 + 0.035 * progress;
+    item.style.transform =
+      `translate3d(0, ${ty.toFixed(1)}px, 0) scale(${scale.toFixed(4)})`;
     return;
   }
 
-  item.style.transform = "none";
+  item.style.transform = "translate3d(0,0,0)";
 }
 
 function updateHomeScrollRevealProgress() {
-  if (!homeScreenRoot || !homeScreenRevealItems.length) return;
+  homeScreenRevealFrame = null;
+  if (!homeScreenRoot || !homeScreenRevealMetrics.length) return;
 
-  for (let item of homeScreenRevealItems) {
-    const progress = getHomeScrollRevealProgress(item);
-    applyHomeScrollRevealProgress(item, progress);
+  const scrollTop = homeScreenRoot.scrollTop;
+  const viewportHeight =
+    homeScreenRoot.clientHeight || window.innerHeight || 1;
+
+  for (let metric of homeScreenRevealMetrics) {
+    const progress = getHomeScrollRevealProgress(
+      metric,
+      scrollTop,
+      viewportHeight
+    );
+    applyHomeScrollRevealProgress(metric.item, progress);
   }
+}
+
+function requestHomeScrollRevealUpdate() {
+  if (homeScreenRevealFrame !== null) return;
+  homeScreenRevealFrame = requestAnimationFrame(updateHomeScrollRevealProgress);
 }
 
 function setupHomeScrollReveal() {
@@ -3245,8 +3595,11 @@ function setupHomeScrollReveal() {
     window.removeEventListener("resize", homeScreenRevealHandler);
   }
 
-  homeScreenRevealHandler = function() {
-    updateHomeScrollRevealProgress();
+  homeScreenRevealHandler = function(event) {
+    if (event && event.type === "resize") {
+      measureHomeScrollRevealItems();
+    }
+    requestHomeScrollRevealUpdate();
   };
 
   homeScreenRoot.addEventListener("scroll", homeScreenRevealHandler, {
@@ -3256,12 +3609,14 @@ function setupHomeScrollReveal() {
     passive: true
   });
 
-  updateHomeScrollRevealProgress();
+  measureHomeScrollRevealItems();
+  requestHomeScrollRevealUpdate();
 }
 
 function resetHomeScrollReveal() {
   if (!homeScreenRoot) return;
-  updateHomeScrollRevealProgress();
+  measureHomeScrollRevealItems();
+  requestHomeScrollRevealUpdate();
 }
 
 function createHomeScreenPhoto(filename, className, altText) {
@@ -3311,7 +3666,7 @@ function openHomeScreenDom() {
 
   updateHomeScreenDomLayout();
   homeScreenRoot.style.display = "block";
-  homeScreenRoot.scrollTop = 0;
+  setPagmarSmoothScrollPosition(homeScreenRoot, 0, true);
   if (homeScreenScrollGuide) {
     homeScreenScrollGuide.classList.remove("is-hidden");
   }
@@ -3358,8 +3713,14 @@ function hideHomeScreenDomOnly() {
 
   if (homeScreenRoot) {
     homeScreenRoot.style.display = "none";
-    homeScreenRoot.scrollTop = 0;
+    setPagmarSmoothScrollPosition(homeScreenRoot, 0, true);
   }
+
+  if (homeScreenRevealFrame !== null) {
+    cancelAnimationFrame(homeScreenRevealFrame);
+    homeScreenRevealFrame = null;
+  }
+  homeScreenRevealMetrics = [];
 }
 
 function closeHomeScreenDom() {
@@ -3639,7 +4000,7 @@ function drawSharedJustifiedParagraph(lines, leftX, rightX, startY, lineH, col, 
 }
 
 function isClothesWord(word) {
-  return word === "לבוש" || word === "ملابس";
+  return word === "\u05DC\u05D1\u05D5\u05E9" || word === "\u0645\u0644\u0627\u0628\u0633";
 }
 
 function openClothesPopupFromCells(cells) {
@@ -3981,7 +4342,7 @@ function canWordTakeKashida(word) {
 }
 
 function normalizeArabicForKashida(word) {
-  return word.replace(/[^\u0600-\u06FF]/g, "").replace(/ـ/g, "");
+  return word.replace(/[^\u0600-\u06FF]/g, "").replace(/\u0640/g, "");
 }
 
 function addOneKashida(word) {
@@ -3992,13 +4353,13 @@ function addOneKashida(word) {
     return word;
   }
 
-  chars.splice(preferredIndex + 1, 0, "ـ");
+  chars.splice(preferredIndex + 1, 0, "\u0640");
   return chars.join("");
 }
 
 function findKashidaInsertIndex(chars) {
   // Avoid placing kashida after letters that do not connect forward.
-  let nonConnecting = "اوأإآدذرزژىءة";
+  let nonConnecting = "\u0627\u0648\u0623\u0625\u0622\u062F\u0630\u0631\u0632\u0698\u0649\u0621\u0629";
   let bestIndex = -1;
 
   for (let i = 0; i < chars.length - 1; i++) {
@@ -4007,7 +4368,7 @@ function findKashidaInsertIndex(chars) {
 
     if (!/[\u0600-\u06FF]/.test(ch)) continue;
     if (!/[\u0600-\u06FF]/.test(next)) continue;
-    if (ch === "ـ" || next === "ـ") continue;
+    if (ch === "\u0640" || next === "\u0640") continue;
     if (nonConnecting.indexOf(ch) !== -1) continue;
 
     // Prefer middle positions, so the stretch feels typographic and not at the edge.
@@ -4359,7 +4720,7 @@ function setupBorderScreenDom() {
 
   borderScreenRoot = document.createElement("section");
   borderScreenRoot.className = "pagmar-border-screen";
-  borderScreenRoot.setAttribute("aria-label", "גבול / حدّ");
+  borderScreenRoot.setAttribute("aria-label", "\u05D2\u05D1\u05D5\u05DC / \u062D\u062F\u0651");
 
   const stage = document.createElement("div");
   stage.className = "pagmar-border-stage";
@@ -4458,6 +4819,7 @@ function setupBorderScreenDom() {
   stage.appendChild(board);
   borderScreenRoot.appendChild(stage);
   document.body.appendChild(borderScreenRoot);
+  installPagmarSmoothWheelScroll(borderScreenRoot);
 
   borderScreenRoot.addEventListener("scroll", function() {
     updateBorderTrailFromScroll();
@@ -5078,7 +5440,7 @@ function drawBlurPopup(alphaVal) {
   textSize(PAGMAR_TYPE.popupClose);
   textAlign(CENTER, CENTER);
   drawingContext.direction = "ltr";
-  text("×", closeX, closeY);
+  text("\u00D7", closeX, closeY);
 
   let centerX = screenLeft + screenW / 2;
   let centerY = screenTop + screenH / 2;
@@ -5195,8 +5557,8 @@ function drawTopBar(alphaVal) {
   drawTopBarBilingualWord(
     width - rightPad,
     h / 2,
-    "ציפור מעופפת",
-    "عصفور طاير",
+    "\u05E6\u05D9\u05E4\u05D5\u05E8 \u05DE\u05E2\u05D5\u05E4\u05E4\u05EA",
+    "\u0639\u0635\u0641\u0648\u0631 \u0637\u0627\u064A\u0631",
     titleSize,
     alphaVal,
     "right",
@@ -5204,7 +5566,7 @@ function drawTopBar(alphaVal) {
     dark
   );
 
-  let titleW = measureBilingualPairWidth("ציפור מעופפת", "عصفور طاير", titleSize, true);
+  let titleW = measureBilingualPairWidth("\u05E6\u05D9\u05E4\u05D5\u05E8 \u05DE\u05E2\u05D5\u05E4\u05E4\u05EA", "\u0639\u0635\u0641\u0648\u0631 \u0637\u0627\u064A\u0631", titleSize, true);
   topTitleRect = {
     x: width - rightPad - titleW - 26,
     y: h / 2 - max(48, titleSize * 1.35) / 2,
@@ -5219,13 +5581,13 @@ function drawTopBar(alphaVal) {
 }
 
 function drawTopBarCounterBlock(leftX, centerY, sizeVal, countText, alphaVal, dark) {
-  let labelW = measureBilingualPairWidth("נמצאו", "تم العثور", sizeVal);
+  let labelW = measureBilingualPairWidth("\u05E0\u05DE\u05E6\u05D0\u05D5", "\u062A\u0645 \u0627\u0644\u0639\u062B\u0648\u0631", sizeVal);
 
   drawTopBarBilingualWord(
     leftX,
     centerY,
-    "נמצאו",
-    "تم العثور",
+    "\u05E0\u05DE\u05E6\u05D0\u05D5",
+    "\u062A\u0645 \u0627\u0644\u0639\u062B\u0648\u0631",
     sizeVal,
     alphaVal * 0.92,
     "left",
@@ -5258,7 +5620,7 @@ function drawTopBarCounterBlock(leftX, centerY, sizeVal, countText, alphaVal, da
 function drawTopBarFoundPairs(alphaVal, activePairId, dark) {
   let h = getHeaderHeight();
   let sizeVal = getPagmarScreenType("navigation");
-  let pairs = coreWordPairs.slice();
+  let pairs = navigationWordPairs.slice();
 
   topNavRects = [];
   if (pairs.length === 0) return;
@@ -5280,10 +5642,14 @@ function drawTopBarFoundPairs(alphaVal, activePairId, dark) {
     let pair = pairs[i];
     let pairId = pair.hebrew + "|" + pair.arabic;
     let isFound = hasFoundWord(pair.hebrew) || hasFoundWord(pair.arabic);
+    let isNavigationOnly = pair.enabled === false;
     let isActive = pairId === activePairId || isPairCurrentlyOpen(pair);
     let textW = wordWidths[i];
     let x = cursorRight - textW / 2;
     let touchW = textW + visualGap;
+    let pairAlpha = isNavigationOnly
+      ? alphaVal * 0.42
+      : (isFound ? alphaVal : alphaVal * 0.24);
 
     drawTopBarBilingualWord(
       x,
@@ -5291,7 +5657,7 @@ function drawTopBarFoundPairs(alphaVal, activePairId, dark) {
       pair.hebrew,
       pair.arabic,
       sizeVal,
-      isFound ? alphaVal : alphaVal * 0.24,
+      pairAlpha,
       "center",
       false,
       dark
@@ -5303,7 +5669,7 @@ function drawTopBarFoundPairs(alphaVal, activePairId, dark) {
       w: touchW,
       h: minTouchH,
       pair: pair,
-      enabled: isFound
+      enabled: !isNavigationOnly && isFound
     });
 
     cursorRight -= textW + visualGap;
@@ -5414,8 +5780,8 @@ function drawSharedFooter(alphaVal) {
   drawFooterEye(left + gap, eyeY, eyeD, blueColor, sharedLensVisible && activeLensColor === "cyan", alphaVal);
 
   let pair = getCurrentInterfacePair();
-  let wordHe = pair ? pair.hebrew : "הגריד";
-  let wordAr = pair ? pair.arabic : "الشبكة";
+  let wordHe = pair ? pair.hebrew : "\u05D4\u05D2\u05E8\u05D9\u05D3";
+  let wordAr = pair ? pair.arabic : "\u0627\u0644\u0634\u0628\u0643\u0629";
   let sizeVal = getPagmarScreenType("ui");
   let wordRightX = width - width * 0.037;
 
@@ -5447,6 +5813,7 @@ function drawSharedFooter(alphaVal) {
 
 function isProjectSubscreenOpen() {
   return Boolean(
+    animatingGridChange ||
     belongingPopupOpen ||
     borderPopupOpen ||
     landPopupOpen ||
@@ -5591,8 +5958,8 @@ function drawFooterActionButtons(
       eyeY,
       buttonW,
       buttonH,
-      "הגריד",
-      "الشبكة",
+      "\u05D4\u05D2\u05E8\u05D9\u05D3",
+      "\u0627\u0644\u0634\u0628\u0643\u0629",
       alphaVal,
       dark
     );
@@ -5604,8 +5971,8 @@ function drawFooterActionButtons(
     eyeY,
     buttonW,
     buttonH,
-    "רמז",
-    "تلميح",
+    "\u05E8\u05DE\u05D6",
+    "\u062A\u0644\u0645\u064A\u062D",
     alphaVal,
     dark
   );
@@ -5751,7 +6118,7 @@ function handleFooterClick(mx, my) {
       footerGridRect.h
     )
   ) {
-    returnToMainGridFromNavigation();
+    transitionToMainGridFromNavigation();
     return true;
   }
 
@@ -6101,7 +6468,7 @@ function getSidebarDividerScreenX() {
 }
 
 // The rectangle (in raw screen pixels) available for full-bleed content that
-// replaces the letter grid — e.g. the memory curtain — while keeping the
+// replaces the letter grid \u2014 e.g. the memory curtain \u2014 while keeping the
 // header, divider, and word-list sidebar all visible around it.
 function getMemoryRegionBounds() {
   let headerH = getHeaderHeight();
@@ -6199,68 +6566,77 @@ function handleTopBarClick(mx, my) {
   return false;
 }
 
+function getPagmarWordTransitionBackground(word) {
+  return isBorderWord(word) ? "#141414" : "#eeeeee";
+}
+
+function startPagmarSlitTransitionForWord(word) {
+  if (
+    typeof window !== "undefined" &&
+    typeof window.isPagmarScreenTransitionActive === "function" &&
+    window.isPagmarScreenTransitionActive()
+  ) {
+    return false;
+  }
+
+  if (
+    typeof window !== "undefined" &&
+    typeof window.playPagmarScreenTransition === "function"
+  ) {
+    return window.playPagmarScreenTransition(
+      getPagmarWordTransitionBackground(word)
+    );
+  }
+
+  return true;
+}
+
 function navigateToFoundPair(pair) {
-  if (!pair) return;
+  if (!pair || pair.enabled === false) return;
 
   let hebrew = pair.hebrew;
   let arabic = pair.arabic;
-
-  // Close the currently open view before moving to another found word.
-  returnToMainGridFromNavigation(false);
-
   let transitionWord = hebrew || arabic;
+
   if (isBorderWord(hebrew) || isBorderWord(arabic)) {
     transitionWord = isBorderWord(hebrew) ? hebrew : arabic;
   }
-  preparePagmarWordScreen(transitionWord);
 
-  if (isMemoryWord(hebrew) || isMemoryWord(arabic)) {
-    openMemoryPopup();
-    return;
-  }
+  // Every navigation between already-found words uses the same slit, including
+  // re-opening the word that is already active and navigating to Language.
+  if (!startPagmarSlitTransitionForWord(transitionWord)) return;
 
-  if (isReflectionWord(hebrew) || isReflectionWord(arabic)) {
-    if (typeof window !== "undefined" && typeof window.openReflectionTicket === "function") {
-      window.openReflectionTicket();
-    }
-    return;
-  }
-
-  if (isHomeWord(hebrew) || isHomeWord(arabic)) {
-    openHomePopupFromPoint(designW / 2, designH / 2);
-    return;
-  }
-
-  if (isBorderWord(hebrew) || isBorderWord(arabic)) {
-    openBorderConstellationScreen();
-    return;
-  }
-
-  if (isBelongingWord(hebrew) || isBelongingWord(arabic)) {
-    openBelongingDoorsScreen();
-    return;
-  }
-
-  if (isLandWord(hebrew) || isLandWord(arabic)) {
-    openLandMinesweeperScreen();
-    return;
-  }
-
-  if (isIdentityWord(hebrew) || isIdentityWord(arabic)) {
-    if (typeof window !== "undefined" && typeof window.openIdentityTicket === "function") {
-      window.openIdentityTicket();
-    }
-    return;
-  }
-
-  if (hebrew === "שפה" || arabic === "لغة") {
-    triggerLanguageRearrange();
-  }
+  // Capture happens above while the current destination is still visible.
+  // It is closed only after the two frozen transition halves exist.
+  returnToMainGridFromNavigation(false);
+  openFoundWordDestination(transitionWord, []);
 }
 
 function returnToFlyingBirdScreenFromNavigation() {
   // Returning to the opening screen starts a clean visitor session.
   window.location.reload();
+}
+
+function transitionToMainGridFromNavigation(replayEntryAnimation = true) {
+  if (
+    typeof window !== "undefined" &&
+    typeof window.isPagmarScreenTransitionActive === "function" &&
+    window.isPagmarScreenTransitionActive()
+  ) {
+    return false;
+  }
+
+  let started = true;
+  if (
+    typeof window !== "undefined" &&
+    typeof window.playPagmarScreenTransition === "function"
+  ) {
+    started = window.playPagmarScreenTransition("#eeeeee");
+  }
+
+  if (!started) return false;
+  returnToMainGridFromNavigation(replayEntryAnimation);
+  return true;
 }
 
 function returnToMainGridFromNavigation(replayEntryAnimation = true) {
@@ -6297,16 +6673,14 @@ function drawTargetWordLabels(alphaVal) {
 
 function getRightReferenceWordList() {
   return [
-    "حدود",
-    "גבול",
-    "بيت",
-    "בית",
-    "انعكاس",
-    "השתקפות",
-    "ذاكرة",
-    "זיכרון",
-    "لغة",
-    "שפה"
+    "\u0628\u064A\u062A",
+    "\u05D1\u05D9\u05EA",
+    "\u0627\u0646\u0639\u0643\u0627\u0633",
+    "\u05D4\u05E9\u05EA\u05E7\u05E4\u05D5\u05EA",
+    "\u0644\u063A\u0629",
+    "\u05E9\u05E4\u05D4",
+    "\u0627\u0646\u062A\u0645\u0627\u0621",
+    "\u05E9\u05D9\u05D9\u05DB\u05D5\u05EA"
   ];
 }
 
@@ -6341,7 +6715,7 @@ function mouseWheel(event) {
       : verticalDelta;
 
   // Positive wheel movement advances from the right panel toward the left.
-  scrollBelongingHorizontally(dominantDelta * 1.08);
+  scrollBelongingHorizontally(dominantDelta * 0.92);
 
   if (event && typeof event.preventDefault === "function") {
     event.preventDefault();
@@ -6537,7 +6911,7 @@ function mousePressed() {
       return;
     }
 
-    if (clickedFoundWord !== null && clickedFoundWord.word === "טשטוש") {
+    if (clickedFoundWord !== null && clickedFoundWord.word === "\u05D8\u05E9\u05D8\u05D5\u05E9") {
       blurPopupOpen = true;
       currentSelection = [];
       return;
@@ -6706,7 +7080,7 @@ function addCellUnderMouse() {
     ? Math.abs(nearestCell.col - previousEnd.col)
     : 1;
 
-  // Either horizontal direction is fine — checkSelection() already matches
+  // Either horizontal direction is fine \u2014 checkSelection() already matches
   // both the forward and reversed reading of the selection.
   currentSelection = getCellsBetween(
     first.row,
@@ -6928,6 +7302,7 @@ function preparePagmarWordScreen(word) {
     isIdentityWord(word) ||
     isReflectionWord(word) ||
     isBelongingWord(word) ||
+    isLanguageWord(word) ||
     isLandWord(word) ||
     isBlurWord(word);
 
@@ -6942,14 +7317,11 @@ function preparePagmarWordScreen(word) {
     window.PagmarAudio.fadeOutIntroSound(1000);
   }
 
-  if (
-    typeof window !== "undefined" &&
-    typeof window.playPagmarScreenTransition === "function"
-  ) {
-    window.playPagmarScreenTransition(
-      isBorderWord(word) ? "#141414" : "#eeeeee"
-    );
-  }
+  // The first discovery of Language transforms the grid in place. Re-opening
+  // Language later from navigation still uses the shared slit in navigateToFoundPair().
+  if (isLanguageWord(word)) return;
+
+  startPagmarSlitTransitionForWord(word);
 }
 
 function updatePendingFoundWordAnimation() {
@@ -6966,6 +7338,9 @@ function updatePendingFoundWordAnimation() {
 }
 
 function openFoundWordDestination(word, cells) {
+  // Border and Memory remain visible conceptual labels in the navigation only.
+  if (isBorderWord(word) || isMemoryWord(word)) return;
+
   if (isHomeWord(word)) {
     openHomePopupFromCells(cells);
     return;
@@ -7021,7 +7396,7 @@ function openFoundWordDestination(word, cells) {
     return;
   }
 
-  if (word === "שפה" || word === "لغة") {
+  if (isLanguageWord(word)) {
     triggerLanguageRearrange();
   }
 }
@@ -7049,13 +7424,11 @@ function addFoundWord(cells, word) {
     resetGridHint();
   }
 
-  // Hold on the grid briefly so the completed drag remains visible before
-  // the destination opens. No additional centre-out animation plays here.
-  pendingFoundWordAnimation = {
-    word: word,
-    cells: copiedCells,
-    startedAt: millis()
-  };
+  // The visitor's drag already completes the selection gesture. Open the
+  // destination immediately; no extra holding pause is inserted afterward.
+  pendingFoundWordAnimation = null;
+  preparePagmarWordScreen(word);
+  openFoundWordDestination(word, copiedCells);
 }
 
 function alreadyFound(cells) {
@@ -7307,7 +7680,7 @@ function screenToDesign(mx, my) {
 }
 
 function getSharpRenderDensity() {
-  // A fixed density of 2 gives the 1920×1080 exhibition screen a 3840×2160
+  // A fixed density of 2 gives the 1920\u00D71080 exhibition screen a 3840\u00D72160
   // internal canvas. This removes the soft text caused by pixelDensity(1).
   return SHARP_RENDER_DENSITY;
 }
@@ -7331,7 +7704,7 @@ function alignToPhysicalPixel(value) {
 }
 
 function calculateLayout() {
-  // The sidebar has been removed. Center the actual 50×20 letter field inside
+  // The sidebar has been removed. Center the actual 50\u00D720 letter field inside
   // the full screen while preserving the original cell spacing and proportions.
   let gridPixelW = (cols - 1) * stepX;
   let gridPixelH = (rows - 1) * stepY;
@@ -7342,7 +7715,7 @@ function calculateLayout() {
   let headerH = getHeaderHeight();
   let availableHeight = height - headerH - getFooterHeight();
 
-  // Leave a small touch-safe margin on all sides. At 1920×1080 this fills the
+  // Leave a small touch-safe margin on all sides. At 1920\u00D71080 this fills the
   // 24-inch display without pushing letters against the screen edges.
   let safeW = width * 0.94;
   let safeH = availableHeight * 0.92;
@@ -7409,48 +7782,53 @@ function rgbaString(col, alphaVal) {
 }
 
 function isSplitWord(word) {
-  return word === "פיצול" || word === "انقسام";
+  return word === "\u05E4\u05D9\u05E6\u05D5\u05DC" || word === "\u0627\u0646\u0642\u0633\u0627\u0645";
 }
 
 function isBorderWord(word) {
-  return word === "גבול" || word === "حدود";
+  return word === "\u05D2\u05D1\u05D5\u05DC" || word === "\u062D\u062F\u0648\u062F";
 }
 
 function isReflectionWord(word) {
-  return word === "השתקפות" || word === "انعكاس" || word === "إنعكاس";
+  return word === "\u05D4\u05E9\u05EA\u05E7\u05E4\u05D5\u05EA" || word === "\u0627\u0646\u0639\u0643\u0627\u0633" || word === "\u0625\u0646\u0639\u0643\u0627\u0633";
 }
 
 function isBlurWord(word) {
-  return word === "טשטוש" ||
-    word === "ضبابية" ||
-    word === "ضبابي" ||
-    word === "ضباب";
+  return word === "\u05D8\u05E9\u05D8\u05D5\u05E9" ||
+    word === "\u0636\u0628\u0627\u0628\u064A\u0629" ||
+    word === "\u0636\u0628\u0627\u0628\u064A" ||
+    word === "\u0636\u0628\u0627\u0628";
 }
 
 function isHomeWord(word) {
-  return word === "בית" || word === "بيت";
+  return word === "\u05D1\u05D9\u05EA" || word === "\u0628\u064A\u062A";
+}
+
+function isLanguageWord(word) {
+  return word === "\u05E9\u05E4\u05D4" || word === "\u0644\u063A\u0629";
 }
 
 function isMemoryWord(word) {
-  return word === "זיכרון" || word === "ذاكرة";
+  return word === "\u05D6\u05D9\u05DB\u05E8\u05D5\u05DF" || word === "\u0630\u0627\u0643\u0631\u0629";
 }
 
 function isIdentityWord(word) {
-  return word === "זהות" || word === "هوية";
+  return word === "\u05D6\u05D4\u05D5\u05EA" || word === "\u0647\u0648\u064A\u0629";
 }
 
 function isBelongingWord(word) {
-  return word === "שייכות" || word === "انتماء";
+  return word === "\u05E9\u05D9\u05D9\u05DB\u05D5\u05EA" || word === "\u0627\u0646\u062A\u0645\u0627\u0621";
 }
 
 function isLandWord(word) {
-  return word === "אדמה" || word === "أرض";
+  return word === "\u05D0\u05D3\u05DE\u05D4" || word === "\u0623\u0631\u0636";
 }
 
 // True while the popup/screen that this specific word opens is currently showing.
 // Used by the sidebar list to highlight only the one "open" word in orange,
 // while every other found word stays black.
 function isWordCurrentlyOpen(word) {
+  if (animatingGridChange && isLanguageWord(word)) return true;
   if (homePopupOpen && isHomeWord(word)) return true;
   if (clothesPopupOpen && isClothesWord(word)) return true;
   if (memoryPopupOpen && isMemoryWord(word)) return true;
@@ -7463,7 +7841,7 @@ function isWordCurrentlyOpen(word) {
 }
 
 function isArabicWord(word) {
-  return /[؀-ۿ]/.test(word);
+  return /[\u0600-\u06FF]/.test(word);
 }
 
 function easeOutCubic(t) {
@@ -7480,7 +7858,7 @@ function easeInOutCubic(t) {
 // MEMORY CURTAIN EFFECT
 // Ported from the standalone "Memory Curtain" p5.js sketch.
 // Triggered in full-screen takeover mode when the word "memory"
-// (זיכרון / ذاكرة) is found. All state/functions are prefixed with
+// (\u05D6\u05D9\u05DB\u05E8\u05D5\u05DF / \u0630\u0627\u0643\u0631\u0629) is found. All state/functions are prefixed with
 // "memory" so nothing collides with the word-search game above.
 // ================================================================
 
@@ -7503,7 +7881,7 @@ function openMemoryPopup() {
     try {
       initMemorySystem();
     } catch (err) {
-      console.error("Memory Curtain failed to start — see the error above/below this line:", err);
+      console.error("Memory Curtain failed to start \u2014 see the error above/below this line:", err);
       memoryPopupOpen = false;
       return;
     }
@@ -7629,6 +8007,9 @@ function resetBelongingHorizontalScroll() {
   belongingHorizontalMaxOffset = max(0, width * (BELONGING_PANEL_COUNT - 1));
   belongingHorizontalDragging = false;
   belongingHorizontalVelocity = 0;
+  belongingHorizontalLastUpdateAt = millis();
+  belongingHorizontalWheelLastAt = -Infinity;
+  belongingHorizontalWheelSnapPending = false;
 }
 
 function updateBelongingHorizontalScroll() {
@@ -7640,31 +8021,50 @@ function updateBelongingHorizontalScroll() {
     belongingHorizontalMaxOffset
   );
 
+  let now = millis();
+  let dt = belongingHorizontalLastUpdateAt
+    ? constrain(now - belongingHorizontalLastUpdateAt, 1, 48)
+    : 16.7;
+  belongingHorizontalLastUpdateAt = now;
+
   if (!belongingHorizontalDragging) {
-    // Soft inertial motion after releasing a swipe.
-    if (abs(belongingHorizontalVelocity) > 0.05) {
+    if (abs(belongingHorizontalVelocity) > 0.01) {
       belongingHorizontalTarget = constrain(
-        belongingHorizontalTarget + belongingHorizontalVelocity,
+        belongingHorizontalTarget + belongingHorizontalVelocity * (dt / 16.7),
         0,
         belongingHorizontalMaxOffset
       );
-      belongingHorizontalVelocity *= 0.90;
+      belongingHorizontalVelocity *= Math.pow(0.86, dt / 16.7);
     } else {
       belongingHorizontalVelocity = 0;
     }
+
+    if (
+      belongingHorizontalWheelSnapPending &&
+      now - belongingHorizontalWheelLastAt >= BELONGING_WHEEL_SNAP_DELAY_MS
+    ) {
+      let panelWidth = max(1, width);
+      let panelIndex = constrain(
+        Math.round(belongingHorizontalTarget / panelWidth),
+        0,
+        BELONGING_PANEL_COUNT - 1
+      );
+      belongingHorizontalTarget = panelIndex * panelWidth;
+      belongingHorizontalWheelSnapPending = false;
+    }
   }
 
-  // The content follows the target smoothly, matching the restrained
-  // horizontal gallery movement of the reference site.
-  belongingHorizontalOffset = lerp(
-    belongingHorizontalOffset,
-    belongingHorizontalTarget,
-    belongingHorizontalDragging ? 0.42 : 0.14
-  );
+  // Frame-rate-independent exponential following gives wheel, trackpad and
+  // drag movement one continuous restrained inertia instead of discrete jumps.
+  let timeConstant = belongingHorizontalDragging
+    ? 72
+    : BELONGING_SCROLL_FOLLOW_MS;
+  let follow = 1 - Math.exp(-dt / timeConstant);
 
-  if (
-    abs(belongingHorizontalOffset - belongingHorizontalTarget) < 0.08
-  ) {
+  belongingHorizontalOffset +=
+    (belongingHorizontalTarget - belongingHorizontalOffset) * follow;
+
+  if (abs(belongingHorizontalOffset - belongingHorizontalTarget) < 0.08) {
     belongingHorizontalOffset = belongingHorizontalTarget;
   }
 }
@@ -7696,9 +8096,9 @@ function updateBelongingHorizontalDrag(pointerX) {
 
   // Convert pointer speed into a short horizontal continuation after release.
   belongingHorizontalVelocity = constrain(
-    (pointerDelta / elapsed) * 17,
-    -42,
-    42
+    (pointerDelta / elapsed) * 12,
+    -30,
+    30
   );
 
   belongingHorizontalLastPointerX = pointerX;
@@ -7722,18 +8122,22 @@ function endBelongingHorizontalDrag() {
 
   belongingHorizontalTarget = panelIndex * panelWidth;
   belongingHorizontalVelocity = 0;
+  belongingHorizontalWheelSnapPending = false;
 }
 
 function scrollBelongingHorizontally(delta) {
   if (!belongingPopupOpen) return;
 
   markPagmarInteractionGuideActivity("belonging");
+  let normalizedDelta = constrain(delta, -150, 150);
   belongingHorizontalTarget = constrain(
-    belongingHorizontalTarget + delta,
+    belongingHorizontalTarget + normalizedDelta,
     0,
     belongingHorizontalMaxOffset
   );
   belongingHorizontalVelocity = 0;
+  belongingHorizontalWheelLastAt = millis();
+  belongingHorizontalWheelSnapPending = true;
 }
 
 function getBelongingDoorRects() {
@@ -7826,7 +8230,6 @@ function drawBelongingScreen() {
   push();
   resetMatrix();
 
-  // Clip the horizontal sequence between the fixed navigation and footer.
   drawingContext.save();
   drawingContext.beginPath();
   drawingContext.rect(0, viewportTop, width, viewportH);
@@ -7835,8 +8238,10 @@ function drawBelongingScreen() {
   let textMargin = max(42, width * 0.14);
   let textTop = viewportTop + max(24, viewportH * 0.09);
   let textHeight = viewportH - max(48, viewportH * 0.18);
+  let imageMarginX = max(28, width * 0.055);
+  let imageMarginY = max(24, viewportH * 0.055);
 
-  // Panel 1: the opening and inherited parts of the poem.
+  // 1 \u2014 opening text
   drawBelongingOverlayTextScreen(
     offset + textMargin,
     textTop,
@@ -7847,21 +8252,28 @@ function drawBelongingScreen() {
     poemPanels[0].hebrew
   );
 
-  // Panel 2: the existing multiplied image provides a visual pause.
-  let imagePanelX = -panelW + offset;
-  let imageMarginX = max(34, width * 0.08);
-  let imageMarginY = max(30, viewportH * 0.07);
-  drawBelongingLayeredImage(
-    imagePanelX + imageMarginX,
+  // 2\u20133 \u2014 inherited/public layers
+  drawBelongingSinglePhoto(
+    -panelW + offset + imageMarginX,
     viewportTop + imageMarginY,
     panelW - imageMarginX * 2,
     viewportH - imageMarginY * 2,
+    belongingPhotoFlag,
     progress
   );
 
-  // Panel 3: places and the versions of the self left inside them.
+  drawBelongingSinglePhoto(
+    -panelW * 2 + offset + imageMarginX,
+    viewportTop + imageMarginY,
+    panelW - imageMarginX * 2,
+    viewportH - imageMarginY * 2,
+    belongingPhotoWoman,
+    progress
+  );
+
+  // 4 \u2014 middle text
   drawBelongingOverlayTextScreen(
-    -panelW * 2 + offset + textMargin,
+    -panelW * 3 + offset + textMargin,
     textTop,
     panelW - textMargin * 2,
     textHeight,
@@ -7870,9 +8282,28 @@ function drawBelongingScreen() {
     poemPanels[1].hebrew
   );
 
-  // Panel 4: the final request for a space that can hold every part.
+  // 5\u20136 \u2014 Haifa/family layers
+  drawBelongingSinglePhoto(
+    -panelW * 4 + offset + imageMarginX,
+    viewportTop + imageMarginY,
+    panelW - imageMarginX * 2,
+    viewportH - imageMarginY * 2,
+    belongingPhotoStatue,
+    progress
+  );
+
+  drawBelongingSinglePhoto(
+    -panelW * 5 + offset + imageMarginX,
+    viewportTop + imageMarginY,
+    panelW - imageMarginX * 2,
+    viewportH - imageMarginY * 2,
+    belongingPhotoFamily,
+    progress
+  );
+
+  // 7 \u2014 closing text
   drawBelongingOverlayTextScreen(
-    -panelW * 3 + offset + textMargin,
+    -panelW * 6 + offset + textMargin,
     textTop,
     panelW - textMargin * 2,
     textHeight,
@@ -7886,6 +8317,35 @@ function drawBelongingScreen() {
 
   drawTopBar(255);
   drawSharedFooter(255);
+}
+
+function drawBelongingSinglePhoto(x, y, w, h, img, progress) {
+  if (!img || !img.width || !img.height) return;
+
+  let imageAspect = img.width / img.height;
+  let frameAspect = w / h;
+  let drawW;
+  let drawH;
+
+  // Contain the entire photograph without cropping or decorative strokes.
+  if (imageAspect > frameAspect) {
+    drawW = w;
+    drawH = w / imageAspect;
+  } else {
+    drawH = h;
+    drawW = h * imageAspect;
+  }
+
+  let drawX = x + (w - drawW) * 0.5;
+  let drawY = y + (h - drawH) * 0.5;
+
+  push();
+  imageMode(CORNER);
+  noStroke();
+  tint(255, 255 * progress);
+  image(img, drawX, drawY, drawW, drawH);
+  noTint();
+  pop();
 }
 
 function drawBelongingOverlayTextScreen(
@@ -8045,9 +8505,9 @@ function drawBelongingHallway() {
   let contentH = height - headerH - getFooterHeight();
   let headingY = headerH + contentH * 0.075;
 
-  text("כל דלת נפתחת פעם אחת בלבד", width / 2, headingY);
+  text("\u05DB\u05DC \u05D3\u05DC\u05EA \u05E0\u05E4\u05EA\u05D7\u05EA \u05E4\u05E2\u05DD \u05D0\u05D7\u05EA \u05D1\u05DC\u05D1\u05D3", width / 2, headingY);
   fill(90);
-  text("كل باب يُفتح مرة واحدة فقط", width / 2, headingY + hallwayHeadingSize * 1.18);
+  text("\u0643\u0644 \u0628\u0627\u0628 \u064A\u064F\u0641\u062A\u062D \u0645\u0631\u0629 \u0648\u0627\u062D\u062F\u0629 \u0641\u0642\u0637", width / 2, headingY + hallwayHeadingSize * 1.18);
   textStyle(NORMAL);
   drawingContext.direction = "ltr";
 
@@ -8070,7 +8530,7 @@ function drawBelongingHallway() {
       fill(150);
       textAlign(CENTER, CENTER);
       textSize(Math.max(16, r.w * 0.16));
-      text("×", r.x + r.w / 2, r.y + r.h / 2);
+      text("\u00D7", r.x + r.w / 2, r.y + r.h / 2);
     } else {
       fill(20);
       circle(r.x + r.w * 0.78, r.y + r.h / 2, Math.max(4, r.w * 0.05));
@@ -8173,7 +8633,7 @@ function drawBelongingActivePanel() {
     fill(90);
     textAlign(CENTER, CENTER);
     textSize(getPagmarScreenType("body"));
-    text("מתנגן / قيد التشغيل", width / 2, mediaTop + mediaH / 2);
+    text("\u05DE\u05EA\u05E0\u05D2\u05DF / \u0642\u064A\u062F \u0627\u0644\u062A\u0634\u063A\u064A\u0644", width / 2, mediaTop + mediaH / 2);
   } else {
     noStroke();
     fill(240);
@@ -8182,7 +8642,7 @@ function drawBelongingActivePanel() {
     fill(150);
     textAlign(CENTER, CENTER);
     textSize(getPagmarScreenType("body"));
-    text("תוכן יתווסף בקרוב / سيُضاف المحتوى قريبًا", width / 2, mediaTop + mediaH / 2);
+    text("\u05EA\u05D5\u05DB\u05DF \u05D9\u05EA\u05D5\u05D5\u05E1\u05E3 \u05D1\u05E7\u05E8\u05D5\u05D1 / \u0633\u064A\u064F\u0636\u0627\u0641 \u0627\u0644\u0645\u062D\u062A\u0648\u0649 \u0642\u0631\u064A\u0628\u064B\u0627", width / 2, mediaTop + mediaH / 2);
   }
 
   let textTop = mediaTop + mediaH + layout.panelH * 0.06;
@@ -8277,7 +8737,7 @@ function isInsideBelongingExitButton(mx, my) {
 
 // ================================================================
 // LAND / MINESWEEPER SCREEN
-// Triggered by "אדמה" / "أرض". Video on the left (IMG_1176.MOV),
+// Triggered by "\u05D0\u05D3\u05DE\u05D4" / "\u0623\u0631\u0636". Video on the left (IMG_1176.MOV),
 // a plain dot grid on the right, matching the reference layout.
 // ================================================================
 
@@ -8384,7 +8844,7 @@ function initMemorySystem() {
   // (loadFont resolves asynchronously) this can fail. Since draw() calls
   // initMemorySystem() again every frame while memorySystemReady stays
   // false, simply returning here retries automatically once the font's
-  // load attempt has resolved — no crash, just a one-frame-or-so wait.
+  // load attempt has resolved \u2014 no crash, just a one-frame-or-so wait.
   if (!mainFontReady) {
     return;
   }
@@ -9928,7 +10388,7 @@ function ipadTouchEnded(e) {
   return false;
 }
 
-const REFLECTION_TICKET_EMBEDDED_HTML = "<!DOCTYPE html>\n<html lang=\"he\" dir=\"rtl\">\n<head>\n  <base href=\"./\" />\n  <meta charset=\"UTF-8\" />\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n  <title>My Reflection Ticket</title>\n  <script src=\"https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js\"></script>\n  <style>\n    @font-face {\n      font-family: \"SimplerMono\";\n      src: url(\"SimplerPro_HLAR_Mono-Regular 2.otf\") format(\"opentype\");\n      font-display: swap;\n    }\n\n    @font-face {\n      font-family: \"AlfaBravoMedium\";\n      src: url(\"AlfaBravo-Medium.otf\") format(\"opentype\");\n      font-style: normal;\n      font-weight: 500;\n      font-display: swap;\n    }\n\n    :root {\n      --bg: #eeeeee;\n      --line: #b5b5b5;\n      --text: #111111;\n      --muted: #6c6c6c;\n      --red: #ff1d25;\n      --blue: #00f0ff;\n      --arabic-ui: #ff3535;\n      --hebrew-ui: #2ef5ff;\n      --topbar-h: clamp(56px, 10.5vh, 100px);\n      --footer-h: var(--topbar-h);\n      --type-ui: clamp(13px, 1.6vh, 16px);\n      --type-nav: clamp(14px, 1.9vh, 18px);\n      --type-title: clamp(30px, 4.3vh, 46px);\n      --type-body: clamp(14px, 1.8vh, 18px);\n    }\n\n    * {\n      box-sizing: border-box;\n    }\n\n    html, body {\n      margin: 0;\n      width: 100%;\n      height: 100%;\n      overflow: hidden;\n      background: var(--bg);\n      color: var(--text);\n      font-family: \"SimplerMono\", Arial, Helvetica, sans-serif;\n    }\n\n    body {\n      display: flex;\n      flex-direction: column;\n    }\n\n    #topBar {\n      height: var(--topbar-h);\n      border-bottom: 0.5px solid var(--line);\n      font-family: \"AlfaBravoMedium\", \"SimplerMono\", Arial, Helvetica, sans-serif;\n      font-weight: 500;\n      display: none;\n      grid-template-columns: 22% 52% 26%;\n      align-items: center;\n      gap: 0;\n      padding: 0;\n      background: var(--bg);\n      direction: ltr;\n    }\n\n    #foundStatus {\n      justify-self: start;\n      padding-left: 3.7vw;\n      display: flex;\n      align-items: center;\n      gap: 12px;\n      min-width: 0;\n      direction: ltr;\n      font-size: var(--type-ui);\n      line-height: 1;\n    }\n\n    #foundNumber {\n      width: 48px;\n      flex: 0 0 48px;\n      text-align: left;\n      direction: ltr;\n      font-variant-numeric: tabular-nums;\n    }\n\n    #foundNumber > span {\n      direction: ltr;\n      unicode-bidi: isolate;\n      text-align: left;\n    }\n\n    .overlapText {\n      display: grid;\n      position: relative;\n      min-width: 0;\n      isolation: isolate;\n    }\n\n    .overlapText > span {\n      grid-area: 1 / 1;\n      display: block;\n      direction: rtl;\n      unicode-bidi: plaintext;\n      mix-blend-mode: multiply;\n    }\n\n    /* The numeric counter must stay visibly red + cyan instead of becoming black. */\n    #foundNumber > span {\n      mix-blend-mode: normal;\n    }\n\n    .hebrewLayer {\n      color: var(--hebrew-ui);\n      transform: translate(2.1px, 1.1px);\n      opacity: 1;\n      z-index: 2;\n    }\n\n    .arabicLayer {\n      color: var(--arabic-ui);\n      transform: translate(-2.1px, -1.1px);\n      opacity: 1;\n      z-index: 1;\n    }\n\n    #foundOverlap {\n      min-width: 92px;\n      text-align: right;\n      font-size: inherit;\n      line-height: 1;\n    }\n\n    #wordNavigation {\n      justify-self: center;\n      width: 100%;\n      max-width: 650px;\n      display: flex;\n      align-items: center;\n      justify-content: center;\n      gap: clamp(8px, 1vw, 18px);\n      direction: rtl;\n      overflow: hidden;\n    }\n\n    .navWord {\n      position: relative;\n      flex: 0 0 auto;\n      min-width: 46px;\n      text-align: center;\n      font-size: var(--type-nav);\n      line-height: 1;\n      white-space: nowrap;\n    }\n\n    #projectTitle {\n      justify-self: end;\n      width: 100%;\n      padding-right: 2.6vw;\n      text-align: right;\n      font-size: var(--type-title);\n      font-weight: 500;\n      letter-spacing: -0.04em;\n      line-height: 0.9;\n      cursor: pointer;\n    }\n\n    #projectTitle .hebrewLayer,\n    #projectTitle .arabicLayer {\n      text-align: right;\n    }\n\n    #mainArea {\n      height: calc(100vh - var(--footer-h));\n      display: grid;\n      grid-template-columns: minmax(0, 2.22fr) minmax(430px, 0.78fr);\n      background: var(--bg);\n      direction: ltr;\n    }\n\n    #canvasPane,\n    #questionsPane {\n      min-width: 0;\n      min-height: 0;\n      position: relative;\n    }\n\n    #canvasPane {\n      border-right: 0.5px solid var(--line);\n      display: flex;\n      align-items: center;\n      justify-content: center;\n      overflow: hidden;\n    }\n\n    #canvasArea {\n      width: 100%;\n      height: 100%;\n      position: relative;\n      display: flex;\n      align-items: center;\n      justify-content: center;\n    }\n\n    #questionsPane {\n      overflow-y: hidden;\n      overflow-x: hidden;\n      direction: rtl;\n      padding: clamp(14px, 2vh, 24px) clamp(22px, 2.3vw, 44px);\n      scrollbar-width: none;\n      display: flex;\n      align-items: stretch;\n    }\n\n    #questionsPane::-webkit-scrollbar {\n      display: none;\n    }\n\n    #questionsInner {\n      width: 100%;\n      max-width: 560px;\n      height: 100%;\n      min-height: 0;\n      margin: 0 auto;\n      display: flex;\n      flex-direction: column;\n      justify-content: space-between;\n      gap: clamp(3px, 0.7vh, 8px);\n    }\n\n    .questionBlock {\n      width: 100%;\n      min-height: 0;\n      margin: 0;\n      text-align: right;\n      flex: 1 1 0;\n      display: flex;\n      flex-direction: column;\n      justify-content: center;\n    }\n\n    .questionText {\n      width: 100%;\n      min-height: 0;\n      margin-bottom: clamp(3px, 0.45vh, 7px);\n      font-size: var(--type-body);\n      line-height: 1.08;\n      font-weight: 400;\n      letter-spacing: 0;\n      text-align: right;\n    }\n\n    .questionText > span {\n      text-align: right;\n      max-width: 100%;\n    }\n\n    .sliderRow {\n      width: 100%;\n      display: flex;\n      justify-content: center;\n      align-items: center;\n      direction: ltr;\n    }\n\n    .sliderScale {\n      width: min(440px, 100%);\n      direction: ltr;\n    }\n\n    .sliderTrackWrap {\n      --fill-percent: 0%;\n      --slider-point-size: 3px;\n      --slider-thumb-size: 4px;\n      position: relative;\n      width: 100%;\n      height: 18px;\n    }\n\n    /* The dashed remainder uses the exact same centerline as the points. */\n    .sliderTrackWrap::before {\n      content: \"\";\n      position: absolute;\n      z-index: 0;\n      left: 0;\n      right: 0;\n      top: 50%;\n      height: 0.5px;\n      transform: translateY(-50%);\n      background: repeating-linear-gradient(\n        to right,\n        rgba(17, 17, 17, 0.20) 0,\n        rgba(17, 17, 17, 0.20) 11px,\n        transparent 11px,\n        transparent 30px\n      );\n      pointer-events: none;\n    }\n\n    /* The solid section ends at the exact center of the selected point. */\n    .sliderTrackWrap::after {\n      content: \"\";\n      position: absolute;\n      z-index: 1;\n      left: 0;\n      top: 50%;\n      width: var(--fill-percent);\n      height: 0.5px;\n      transform: translateY(-50%);\n      background: #111;\n      pointer-events: none;\n    }\n\n    input[type=\"range\"] {\n      -webkit-appearance: none;\n      appearance: none;\n      position: absolute;\n      z-index: 3;\n      top: 0;\n      left: calc(var(--slider-thumb-size) / -2);\n      width: calc(100% + var(--slider-thumb-size));\n      height: 100%;\n      margin: 0;\n      padding: 0;\n      background: transparent;\n      outline: none;\n      cursor: pointer;\n      touch-action: none;\n    }\n\n    input[type=\"range\"]::-webkit-slider-runnable-track {\n      height: 0.5px;\n      background: transparent;\n    }\n\n    input[type=\"range\"]::-webkit-slider-thumb {\n      -webkit-appearance: none;\n      appearance: none;\n      width: 4px;\n      height: 4px;\n      border-radius: 50%;\n      background: #111111;\n      border: 0;\n      margin-top: -1.5px;\n    }\n\n    input[type=\"range\"]::-moz-range-track {\n      height: 0.5px;\n      background: transparent;\n    }\n\n    input[type=\"range\"]::-moz-range-progress {\n      height: 0.5px;\n      background: transparent;\n    }\n\n    input[type=\"range\"]::-moz-range-thumb {\n      width: 4px;\n      height: 4px;\n      border-radius: 50%;\n      background: #111111;\n      border: 0;\n    }\n\n    .scaleMarkers {\n      position: absolute;\n      z-index: 2;\n      inset: 0;\n      pointer-events: none;\n    }\n\n    .scaleMarkers span {\n      position: absolute;\n      top: 50%;\n      width: var(--slider-point-size);\n      height: var(--slider-point-size);\n      border-radius: 50%;\n      background: #111;\n      transform: translate(-50%, -50%);\n    }\n\n    .scaleMarkers span:nth-child(1) { left: 0%; }\n    .scaleMarkers span:nth-child(2) { left: 25%; }\n    .scaleMarkers span:nth-child(3) { left: 50%; }\n    .scaleMarkers span:nth-child(4) { left: 75%; }\n    .scaleMarkers span:nth-child(5) { left: 100%; }\n\n    .anchorRow {\n      display: grid;\n      grid-template-columns: 1fr 1fr 1fr;\n      align-items: start;\n      margin-top: 2px;\n      direction: ltr;\n    }\n\n    .anchorItem {\n      min-width: 0;\n      font-size: clamp(8px, 1.05vh, 10px);\n      line-height: 1.06;\n      color: var(--muted);\n    }\n\n    .anchorItem:nth-child(1) { text-align: left; }\n    .anchorItem:nth-child(2) { text-align: center; }\n    .anchorItem:nth-child(3) { text-align: right; }\n\n    .anchorNumber {\n      display: block;\n      margin-bottom: 1px;\n      color: #111;\n      font-family: \"SimplerMono\", monospace;\n      font-size: clamp(7px, 0.85vh, 8px);\n      direction: ltr;\n    }\n\n    .anchorOverlap {\n      width: 100%;\n      min-height: 14px;\n      font-size: clamp(8px, 1.05vh, 10px);\n    }\n\n    .anchorOverlap > span {\n      white-space: normal;\n    }\n\n    .anchorItem:nth-child(1) .anchorOverlap > span { text-align: left; }\n    .anchorItem:nth-child(2) .anchorOverlap > span { text-align: center; }\n    .anchorItem:nth-child(3) .anchorOverlap > span { text-align: right; }\n\n    .hiddenValue {\n      display: none;\n    }\n\n    #sideLabelPane,\n    #languageTabs {\n      display: none !important;\n    }\n\n    #printButton {\n      position: absolute;\n      left: clamp(24px, 2vw, 38px);\n      bottom: clamp(20px, 2.2vh, 28px);\n      z-index: 10;\n      min-width: 118px;\n      border: 0.5px solid #231f20;\n      background: #231f20;\n      color: #ececec;\n      padding: 11px 22px 10px;\n      font-family: \"SimplerMono\", Arial, Helvetica, sans-serif;\n      font-size: clamp(12px, 0.85vw, 16px);\n      line-height: 1;\n      letter-spacing: 0.08em;\n      text-align: center;\n      cursor: pointer;\n      border-radius: 999px;\n    }\n\n    #printButton:hover,\n    #printButton:focus-visible {\n      background: transparent;\n      color: #231f20;\n      outline: none;\n    }\n\n    @media (min-width: 1600px) and (min-height: 850px) {\n      #questionsInner {\n        height: 100%;\n      }\n\n      .sliderScale {\n        width: min(480px, 100%);\n      }\n    }\n\n    @media (max-width: 1380px) {\n      #topBar {\n        grid-template-columns: 155px minmax(0, 1fr) 250px;\n        padding-inline: 28px;\n      }\n\n      #wordNavigation {\n        gap: clamp(8px, 1vw, 14px);\n      }\n\n      .navWord {\n        min-width: 38px;\n        font-size: 14px;\n      }\n\n      #mainArea {\n        grid-template-columns: minmax(0, 1.82fr) minmax(410px, 0.88fr);\n      }\n\n      #questionsInner {\n        min-height: 0;\n      }\n    }\n\n    @media (min-width: 1081px) and (max-height: 760px) {\n      #questionsPane {\n        padding-top: 9px;\n        padding-bottom: 9px;\n      }\n\n      #questionsInner {\n        gap: 2px;\n      }\n\n      .questionText {\n        font-size: 12px;\n        line-height: 1.04;\n        margin-bottom: 2px;\n      }\n\n      .sliderTrackWrap,\n      input[type=\"range\"] {\n        height: 15px;\n      }\n\n\n      .anchorRow {\n        margin-top: 0;\n      }\n\n      .anchorItem,\n      .anchorOverlap {\n        font-size: 7.5px;\n        line-height: 1;\n      }\n    }\n\n    @media (max-width: 1080px) {\n      html, body {\n        overflow: auto;\n      }\n\n      #topBar {\n        height: auto;\n        min-height: 104px;\n        grid-template-columns: 1fr auto;\n        gap: 14px 20px;\n        padding: 16px 24px;\n      }\n\n      #wordNavigation {\n        grid-column: 1 / -1;\n        grid-row: 2;\n        flex-wrap: wrap;\n        gap: 13px 24px;\n      }\n\n      #mainArea {\n        height: auto;\n        min-height: calc(100vh - 104px);\n        grid-template-columns: 1fr;\n        grid-template-rows: min(58vw, 56vh) auto;\n      }\n\n      #canvasPane {\n        border-right: 0;\n        border-bottom: 0.5px solid var(--line);\n      }\n\n      #questionsPane {\n        display: block;\n        padding: 42px 28px 60px;\n      }\n\n      #questionsInner {\n        height: auto;\n        min-height: 0;\n        display: block;\n      }\n\n      .questionBlock {\n        margin-bottom: 38px;\n      }\n    }\n\n    @media (max-width: 640px) {\n      #topBar {\n        grid-template-columns: 1fr;\n        justify-items: center;\n      }\n\n      #foundStatus,\n      #projectTitle {\n        justify-self: center;\n      }\n\n      #wordNavigation {\n        display: none;\n      }\n\n      #mainArea {\n        grid-template-rows: 44vh auto;\n      }\n\n      #questionsPane {\n        padding: 34px 20px 52px;\n      }\n\n      .questionText {\n        font-size: 16px;\n      }\n\n      .anchorItem {\n        font-size: 9px;\n      }\n    }\n\n    #sharedFooter {\n      height: var(--footer-h);\n      flex: 0 0 var(--footer-h);\n      border-top: 0.5px solid rgba(0,0,0,.2);\n      background: var(--bg);\n      display: flex;\n      align-items: center;\n      justify-content: space-between;\n      padding: 0 3.7vw;\n      direction: ltr;\n      font-family: \"AlfaBravoMedium\", \"SimplerMono\", monospace;\n      position: relative;\n    }\n\n    #footerActions {\n      position: absolute;\n      right: calc(3.7vw + 158px);\n      top: 50%;\n      transform: translateY(-50%);\n      display: flex;\n      align-items: center;\n      direction: ltr;\n    }\n\n    .footerAction {\n      width: 140px;\n      height: 28px;\n      border: 0.5px solid rgba(17,17,17,.62);\n      border-radius: 999px;\n      background: transparent;\n      padding: 0;\n      cursor: pointer;\n      touch-action: manipulation;\n      font-family: \"AlfaBravoMedium\", \"SimplerMono\", monospace;\n      font-size: var(--type-ui);\n      line-height: 1;\n    }\n\n    .footerAction > span {\n      align-self: center;\n      justify-self: center;\n      text-align: center;\n    }\n\n    #footerEyes { display: flex; align-items: center; gap: 14px; }\n    .footerEye {\n      width: 25px;\n      height: 25px;\n      border-radius: 50%;\n      padding: 0;\n      cursor: pointer;\n      background: transparent;\n      border: 0;\n      position: relative;\n      touch-action: manipulation;\n    }\n    .footerEye::after {\n      content: \"\";\n      position: absolute;\n      inset: 4px;\n      border-radius: 50%;\n      background: var(--eye-color);\n      opacity: 1;\n    }\n    .footerEye.isActive {\n      border: 0.5px dashed #111;\n    }\n    #footerCurrentWord {\n      width: 142px;\n      min-width: 142px;\n      font-size: clamp(13px, 1.7vh, 18px);\n      text-align: right;\n    }\n\n    #printPage {\n      display: none;\n    }\n\n    #printTicketImage {\n      display: block;\n    }\n\n    @media print {\n      @page {\n        size: 148mm 105mm;\n        margin: 0;\n      }\n\n      html, body {\n        width: 148mm;\n        height: 105mm;\n        margin: 0 !important;\n        padding: 0 !important;\n        background: #ffffff !important;\n        overflow: hidden !important;\n      }\n\n      #topBar,\n      #mainArea,\n      #sharedFooter {\n        display: none !important;\n      }\n\n    #sharedFooter {\n      height: var(--footer-h);\n      flex: 0 0 var(--footer-h);\n      border-top: 0.5px solid rgba(0,0,0,.2);\n      background: var(--bg);\n      display: flex;\n      align-items: center;\n      justify-content: space-between;\n      padding: 0 3.7vw;\n      direction: ltr;\n      font-family: \"AlfaBravoMedium\", \"SimplerMono\", monospace;\n    }\n\n    #footerEyes { display: flex; align-items: center; gap: 14px; }\n    .footerEye {\n      width: 25px;\n      height: 25px;\n      border-radius: 50%;\n      padding: 0;\n      cursor: pointer;\n      background: transparent;\n      border: 0;\n      position: relative;\n      touch-action: manipulation;\n    }\n    .footerEye::after {\n      content: \"\";\n      position: absolute;\n      inset: 4px;\n      border-radius: 50%;\n      background: var(--eye-color);\n      opacity: 1;\n    }\n    .footerEye.isActive {\n      border: 0.5px dashed #111;\n    }\n    #footerCurrentWord {\n      width: 142px;\n      min-width: 142px;\n      font-size: clamp(13px, 1.7vh, 18px);\n      text-align: right;\n    }\n\n    #printPage {\n        display: flex !important;\n        width: 148mm;\n        height: 105mm;\n        align-items: center;\n        justify-content: center;\n        background: #ffffff;\n        overflow: hidden;\n      }\n\n      #printTicketImage {\n        width: 148mm;\n        height: 105mm;\n        max-width: none;\n        max-height: none;\n        object-fit: fill;\n        image-rendering: auto;\n        display: block;\n        -webkit-print-color-adjust: exact;\n        print-color-adjust: exact;\n      }\n    }\n  </style>\n</head>\n<body>\n  <header id=\"topBar\">\n    <div id=\"foundStatus\" aria-label=\"0 מתוך 5 נמצאו / تم العثور على 0 من 5\">\n      <div id=\"foundOverlap\" class=\"overlapText\" aria-hidden=\"true\">\n        <span class=\"hebrewLayer\" lang=\"he\">נמצאו</span>\n        <span class=\"arabicLayer\" lang=\"ar\">تم العثور</span>\n      </div>\n      <div id=\"foundNumber\" class=\"overlapText\" aria-hidden=\"true\">\n        <span class=\"hebrewLayer\" lang=\"he\">5/0</span>\n        <span class=\"arabicLayer\" lang=\"ar\">5/0</span>\n      </div>\n    </div>\n\n    <nav id=\"wordNavigation\" aria-label=\"מילות הפרויקט / كلمات المشروع\">\n      <div class=\"navWord overlapText\"><span class=\"hebrewLayer\" lang=\"he\">גבול</span><span class=\"arabicLayer\" lang=\"ar\">حدود</span></div>\n      <div class=\"navWord overlapText\"><span class=\"hebrewLayer\" lang=\"he\">בית</span><span class=\"arabicLayer\" lang=\"ar\">بيت</span></div>\n      <div class=\"navWord overlapText\"><span class=\"hebrewLayer\" lang=\"he\">השתקפות</span><span class=\"arabicLayer\" lang=\"ar\">انعكاس</span></div>\n      <div class=\"navWord overlapText\"><span class=\"hebrewLayer\" lang=\"he\">זיכרון</span><span class=\"arabicLayer\" lang=\"ar\">ذاكرة</span></div>\n      <div class=\"navWord overlapText\"><span class=\"hebrewLayer\" lang=\"he\">שפה</span><span class=\"arabicLayer\" lang=\"ar\">لغة</span></div>\n    </nav>\n\n    <div id=\"projectTitle\" class=\"overlapText\" aria-label=\"ציפור מעופפת / عصفور طاير\">\n      <span id=\"titleHe\" class=\"hebrewLayer\" lang=\"he\" title=\"כרטיס בעברית\">ציפור מעופפת</span>\n      <span id=\"titleAr\" class=\"arabicLayer\" lang=\"ar\" title=\"البطاقة بالعربية\">عصفور طاير</span>\n    </div>\n  </header>\n\n  <main id=\"mainArea\">\n    <section id=\"canvasPane\">\n      <div id=\"canvasArea\"></div>\n      <button id=\"printButton\" type=\"button\" aria-label=\"Print A6 ticket\">PRINT</button>\n    </section>\n\n    <section id=\"questionsPane\">\n      <div id=\"questionsInner\"></div>\n    </section>\n\n    <aside id=\"sideLabelPane\">\n      <div class=\"sideWordWrap\">\n        <div class=\"sideWordPrimary\">انعكاس</div>\n        <div class=\"sideWordSecondary\">השתקפות</div>\n      </div>\n    </aside>\n  </main>\n\n\n  <footer id=\"sharedFooter\">\n    <div id=\"footerEyes\" aria-label=\"Select draggable color lens\">\n      <button id=\"footerArabicEye\" class=\"footerEye\" style=\"--eye-color:#ff3535\" aria-label=\"Select red lens\"></button>\n      <button id=\"footerHebrewEye\" class=\"footerEye\" style=\"--eye-color:#2ef5ff\" aria-label=\"Select cyan lens\"></button>\n    </div>\n    <div id=\"footerActions\" aria-label=\"Navigation actions\">\n      <button id=\"footerGridButton\" class=\"footerAction overlapText\" type=\"button\" aria-label=\"Return to grid\">\n        <span class=\"hebrewLayer\" lang=\"he\">הגריד</span>\n        <span class=\"arabicLayer\" lang=\"ar\">الشبكة</span>\n      </button>\n    </div>\n    <div id=\"footerCurrentWord\" class=\"overlapText\" aria-label=\"Current word\">\n      <span class=\"hebrewLayer\" lang=\"he\">השתקפות</span>\n      <span class=\"arabicLayer\" lang=\"ar\">انعكاس</span>\n    </div>\n  </footer>\n\n  <section id=\"printPage\">\n    <img id=\"printTicketImage\" alt=\"Printed reflection ticket\" />\n  </section>\n\n<script>\nlet answers = [1, 2, 2, 2, 2];\nlet patternSeed = 24111;\nlet userSeed = 0;\nlet cnv;\nlet ticketG;\nlet ticketDirty = true;\nlet currentLang = \"he\";\nlet ticketLang = \"he\";\nlet ticketFont = null;\nlet fontReady = false;\n\nconst RED = \"#ff1d25\";\nconst BLUE = \"#00f0ff\";\nconst BLACK = \"#111111\";\nconst GRAY_BG = \"#ececec\";\nconst LIGHT_BLUE = \"#9bbbf8\";\nconst ARABIC_TEXT_COLOR = \"#ff3535\";\nconst HEBREW_TEXT_COLOR = \"#2ef5ff\";\nconst ANSWER_BLOCK_COLOR = \"#231f20\";\n\n// True A6 landscape dimensions.\n// 148 × 105 mm rendered at 300 DPI = 1748 × 1240 pixels.\nconst A6_WIDTH_MM = 148;\nconst A6_HEIGHT_MM = 105;\nconst EXPORT_DPI = 300;\nconst PRINT_W = Math.round((A6_WIDTH_MM / 25.4) * EXPORT_DPI);\nconst PRINT_H = Math.round((A6_HEIGHT_MM / 25.4) * EXPORT_DPI);\nconst PRINT_RATIO = PRINT_H / PRINT_W;\n\n// Five square pattern modules stacked vertically in each strip.\nconst PATTERN_BLOCK_COUNT = 5;\nconst PATTERN_STRIP_COUNT = 2;\n\nconst CONTENT = {\n  he: {\n    foundStatusText: \"נמצאו\",\n    questions: [\n      \"1. עד כמה המשמעות של מה שאת/ה רוצה לומר משתנה במעבר בין שפה אחת לאחרת?\",\n      \"2. עד כמה את/ה מרגיש/ה שגרסה אחרת שלך מופיעה בכל שפה?\",\n      \"3. עד כמה את/ה מרגיש/ה שאחרים מבינים אותך אחרת כשאת/ה מדבר/ת בשפה שונה?\",\n      \"4. עד כמה השפה שבה את/ה מדבר/ת משפיעה על תחושת השייכות שלך?\",\n      \"5. עד כמה יש בך דברים שאף שפה אינה מצליחה לבטא במלואם?\"\n    ],\n    scaleAnchors: [\n      { value: \"1\", text: \"כמעט בכלל לא\" },\n      { value: \"3\", text: \"לפעמים\" },\n      { value: \"5\", text: \"במידה רבה מאוד\" }\n    ],\n    ticketTitle: \"בין השפות\",\n    ticketVersion: \"פרויקט גמר 2026\",\n    reflectionLabel: \"קריאה אישית\",\n    noteLabel: \"נבנה מחמש התשובות שלך\",\n    footerNote: \"התוצאה מתארת את אופן התגובה שלך ברגע זה; היא אינה קביעה קבועה.\",\n    barcodeLabel: \"השתקפות\",\n    labels: [\n      \"מה עובר בין השפות\",\n      \"איך את/ה משתנה\",\n      \"איך אחרים מבינים אותך\",\n      \"איך השפה משפיעה על שייכות\",\n      \"מה קשה לבטא\"\n    ],\n    shortLabels: [\n      \"משמעות\",\n      \"שינוי\",\n      \"הבנה\",\n      \"שייכות\",\n      \"ביטוי\"\n    ],\n    statements: [\n      [\n        \"המילים כמעט נשארות שלמות.\",\n        \"רק מעט משתנה בדרך.\",\n        \"חלק מהכוונה מתחלף.\",\n        \"המשמעות מגיעה חלקית.\",\n        \"הרבה נשאר מאחור.\"\n      ],\n      [\n        \"אותו קול מלווה אותך.\",\n        \"הטון משתנה מעט.\",\n        \"צד אחר בך מופיע.\",\n        \"כל שפה משנה את הנוכחות שלך.\",\n        \"בכל שפה מופיעה גרסה אחרת שלך.\"\n      ],\n      [\n        \"רוב האנשים שומעים את כוונתך.\",\n        \"לפעמים משהו נקרא אחרת.\",\n        \"חלק ממך מתפספס.\",\n        \"הנחות קודמות נכנסות לשיחה.\",\n        \"את/ה נזהר/ת לפני כל משפט.\"\n      ],\n      [\n        \"השייכות נשארת יציבה.\",\n        \"הנוחות משתנה מעט.\",\n        \"המקום משנה את התחושה.\",\n        \"השפה פותחת או סוגרת מרחב.\",\n        \"השייכות תלויה באופן שבו את/ה נשמע/ת.\"\n      ],\n      [\n        \"רוב הדברים מוצאים מילים.\",\n        \"מעט נשאר בפנים.\",\n        \"יש דברים בלי ניסוח שלם.\",\n        \"הרבה נשאר שקט.\",\n        \"הדברים הכבדים ביותר נשארים בלי שם.\"\n      ]\n    ],\n    reflectionSystem: {\n      opening: {\n        low: [\n          \"את/ה עובר/ת בין השפות בלי לאבד את הכיוון שלך. הצליל משתנה, אבל מה שרצית לומר נשאר קרוב למקור.\",\n          \"המעבר בין השפות טבעי לך יחסית. המילים מתחלפות, אך הקול שמאחוריהן נשאר מוכר וברור.\"\n        ],\n        mid: [\n          \"בכל שפה הקול שלך מקבל גוון מעט אחר. את/ה מתאים/ה את המילים למקום ולאנשים, אך שומר/ת על חוט שמחבר בין הגרסאות.\",\n          \"המעבר בין השפות משנה אצלך את הקצב ואת מידת החשיפה. לא הכול משתנה, אבל בכל מרחב מופיע צד מעט אחר שלך.\"\n        ],\n        high: [\n          \"המעבר בין שפות דורש ממך בחירה מחודשת בכל פעם. חלקים מסוימים נעשים ברורים יותר, ואחרים נסוגים כדי שתוכל/י להישמע ולהיות מובן/ת.\",\n          \"בכל שפה את/ה בונה מחדש את הדרך שבה תופסים אותך. המאמץ אינו רק למצוא מילים, אלא גם לבחור מה יופיע ומה יישאר ברקע.\"\n        ]\n      },\n      dimensions: [\n        {\n          low: [\"רוב המשמעות עוברת איתך, ולכן אינך נדרש/ת לוותר על הרבה בדרך.\"],\n          mid: [\"העיקר מגיע, אך כמה גוונים דקים נשארים מאחור או מקבלים צורה אחרת.\"],\n          high: [\"מה שמגיע לאחרים הוא רק חלק ממה שהתכוונת לשאת איתך.\"]\n        },\n        {\n          low: [\"הנוכחות שלך נשארת דומה גם כשהשפה מתחלפת.\"],\n          mid: [\"כל שפה מזמינה צד מעט אחר שלך, בלי למחוק את הצדדים האחרים.\"],\n          high: [\"כל שפה מציבה אותך במקום אחר ומבליטה גרסה שונה שלך.\"]\n        },\n        {\n          low: [\"ברוב המקרים הכוונה שלך נקראת כפי שרצית.\"],\n          mid: [\"לפעמים אחרים פוגשים רק שכבה אחת, ואת/ה משלים/ה את החסר תוך כדי.\"],\n          high: [\"המבט של אחרים נכנס בין המילים ומשנה את האופן שבו שומעים אותך.\"]\n        },\n        {\n          low: [\"תחושת המקום שלך אינה תלויה מאוד בשפה שבה דיברת.\"],\n          mid: [\"הנוחות והשייכות משתנות לפי הסביבה ולפי מי שנמצא מולך.\"],\n          high: [\"השפה משפיעה על המקום שבו את/ה מרשה לעצמך להיפתח ולהרגיש חלק.\"]\n        },\n        {\n          low: [\"רוב הדברים החשובים מצליחים לקבל מילים.\"],\n          mid: [\"יש חוויות שמגיעות רק עד קצה המשפט ונשארות שם.\"],\n          high: [\"חלקים משמעותיים נשארים בלי ניסוח מלא, אך ממשיכים להיות נוכחים.\"]\n        }\n      ],\n      anchors: [\n        [\"הדיוק נשאר נקודת יציבות עבורך.\"],\n        [\"הקול שלך נשאר מוכר גם כשהמסגרת משתנה.\"],\n        [\"יש לך ביטחון יחסי באופן שבו הכוונה שלך נקלטת.\"],\n        [\"יש בך תחושת מקום שאינה תלויה רק בשפה.\"],\n        [\"כשמשהו חשוב באמת, את/ה עדיין מוצא/ת דרך לומר אותו.\"]\n      ],\n      closing: {\n        contrast: [\n          \"הפער בין התשובות מראה שלא כל מרחב דורש ממך אותו מאמץ; יש מקומות שבהם את/ה נושם/ת בחופשיות, ואחרים שבהם כל מילה נשקלת.\",\n          \"החוויה שלך משתנה מאוד לפי ההקשר. במקומות מסוימים הדברים זורמים, ובאחרים את/ה נדרש/ת לעצור, לבדוק ולבחור מחדש.\"\n        ],\n        even: [\n          \"התשובות שלך קרובות זו לזו, ולכן החוויה אינה נשלטת בידי מוקד אחד. היא נבנית מצירוף שקט של התאמות קטנות שחוזרות לאורך היום.\",\n          \"אין גורם יחיד שמוביל את התוצאה שלך. המשמעות, הקול, המבט והשייכות נעים יחד ומשפיעים זה על זה במידה דומה.\"\n        ],\n        balanced: [\n          \"שני מוקדים בולטים יותר מן האחרים, אך הם אינם מספרים את כל הסיפור. הם מצביעים על המקומות שבהם המעבר בין שפות מורגש אצלך במיוחד.\",\n          \"התוצאה שלך מאוזנת, אך שני אזורים דורשים יותר תשומת לב. שם את/ה מרגיש/ה באופן הברור ביותר את המרחק בין מה שרצית לומר לבין מה שהצליח להגיע.\"\n        ]\n      }\n    }\n  },\n  ar: {\n    foundStatusText: \"تم العثور\",\n    questions: [\n      \"1. إلى أي مدى يتغيّر معنى ما تريد/ين قوله عند الانتقال من لغة إلى أخرى؟\",\n      \"2. إلى أي مدى تشعر/ين أن نسخة أخرى منك تظهر في كل لغة؟\",\n      \"3. إلى أي مدى تشعر/ين أن الآخرين يفهمونك بشكل مختلف عندما تتحدث/ين بلغة أخرى؟\",\n      \"4. إلى أي مدى تؤثر اللغة التي تتحدث/ين بها في إحساسك بالانتماء؟\",\n      \"5. إلى أي مدى توجد فيك أشياء لا تستطيع أي لغة التعبير عنها بالكامل؟\"\n    ],\n    scaleAnchors: [\n      { value: \"1\", text: \"تقريبًا أبدًا\" },\n      { value: \"3\", text: \"أحيانًا\" },\n      { value: \"5\", text: \"إلى حد كبير جدًا\" }\n    ],\n    ticketTitle: \"بين اللغات\",\n    ticketVersion: \"مشروع تخرج 2026\",\n    reflectionLabel: \"قراءة شخصية\",\n    noteLabel: \"مبنية على إجاباتك الخمس\",\n    footerNote: \"النتيجة تصف أسلوب استجابتك في هذه اللحظة؛ وليست حكمًا ثابتًا.\",\n    barcodeLabel: \"انعكاس\",\n    labels: [\n      \"ما الذي ينتقل بين اللغات\",\n      \"كيف تتغير/ين\",\n      \"كيف يفهمك الآخرون\",\n      \"كيف تؤثر اللغة في الانتماء\",\n      \"ما الذي يصعب التعبير عنه\"\n    ],\n    shortLabels: [\n      \"معنى\",\n      \"تغيّر\",\n      \"فهم\",\n      \"انتماء\",\n      \"تعبير\"\n    ],\n    statements: [\n      [\n        \"تبقى الكلمات شبه كاملة.\",\n        \"يتغير القليل في الطريق.\",\n        \"يتبدل جزء من القصد.\",\n        \"يصل المعنى بشكل جزئي.\",\n        \"يبقى الكثير خلفك.\"\n      ],\n      [\n        \"يرافقك الصوت نفسه.\",\n        \"تتغير النبرة قليلًا.\",\n        \"يظهر جانب آخر منك.\",\n        \"كل لغة تغيّر حضورك.\",\n        \"في كل لغة تظهر نسخة أخرى منك.\"\n      ],\n      [\n        \"غالبًا يسمع الآخرون قصدك.\",\n        \"أحيانًا يُقرأ شيء بشكل آخر.\",\n        \"يضيع جزء منك في الفهم.\",\n        \"تدخل الافتراضات إلى الحديث.\",\n        \"تتأنى قبل كل جملة.\"\n      ],\n      [\n        \"يبقى انتماؤك ثابتًا.\",\n        \"تتغير الراحة قليلًا.\",\n        \"يغيّر المكان الإحساس.\",\n        \"تفتح اللغة مساحة أو تغلقها.\",\n        \"يتعلق الانتماء بالطريقة التي تُسمع بها.\"\n      ],\n      [\n        \"تجد معظم الأشياء كلماتها.\",\n        \"يبقى القليل في الداخل.\",\n        \"هناك أمور بلا صياغة كاملة.\",\n        \"يبقى الكثير صامتًا.\",\n        \"أثقل ما فيك يبقى أحيانًا بلا اسم.\"\n      ]\n    ],\n    reflectionSystem: {\n      opening: {\n        low: [\n          \"تتنقل/ين بين اللغات من دون أن تفقد/ي اتجاهك. يتغيّر الصوت، لكن ما أردت قوله يبقى قريبًا من أصله.\",\n          \"الانتقال بين اللغات طبيعي لديك نسبيًا. تتبدل الكلمات، لكن الصوت الذي خلفها يبقى مألوفًا وواضحًا.\"\n        ],\n        mid: [\n          \"في كل لغة يكتسب صوتك نبرة مختلفة قليلًا. تعدّل/ين الكلمات بحسب المكان ومن أمامك، لكنك تحافظ/ين على خيط يصل بين النسخ المختلفة.\",\n          \"الانتقال بين اللغات يغيّر الإيقاع ودرجة انكشافك. لا يتغير كل شيء، لكن جانبًا مختلفًا منك يظهر في كل مساحة.\"\n        ],\n        high: [\n          \"الانتقال بين اللغات يطلب منك اختيارًا جديدًا في كل مرة. تصبح بعض الجوانب أوضح، وتتراجع أخرى كي تتمكن/ي من أن تُسمع/ي وأن تُفهم/ي.\",\n          \"في كل لغة تعيد/ين بناء الطريقة التي يراك بها الآخرون. الجهد ليس في إيجاد الكلمات فقط، بل في اختيار ما سيظهر وما سيبقى في الخلف.\"\n        ]\n      },\n      dimensions: [\n        {\n          low: [\"يصل معظم المعنى معك، لذلك لا تضطر/ين إلى ترك الكثير في الطريق.\"],\n          mid: [\"يصل الأساس، لكن بعض التفاصيل الدقيقة تبقى خلفك أو تأخذ شكلًا آخر.\"],\n          high: [\"ما يصل إلى الآخرين ليس إلا جزءًا مما أردت حمله معك.\"]\n        },\n        {\n          low: [\"يبقى حضورك قريبًا من نفسه حتى عندما تتبدل اللغة.\"],\n          mid: [\"تدعو كل لغة جانبًا مختلفًا قليلًا منك، من دون أن تمحو الجوانب الأخرى.\"],\n          high: [\"تضعك كل لغة في موقع مختلف وتبرز نسخة أخرى منك.\"]\n        },\n        {\n          low: [\"في معظم الأحيان يُفهم قصدك كما أردت.\"],\n          mid: [\"أحيانًا يرى الآخرون طبقة واحدة فقط، فتكمّل/ين ما ينقص أثناء الحديث.\"],\n          high: [\"تدخل نظرة الآخرين بين الكلمات وتغيّر الطريقة التي يُسمع بها صوتك.\"]\n        },\n        {\n          low: [\"إحساسك بالمكان لا يعتمد كثيرًا على اللغة التي تتحدث/ين بها.\"],\n          mid: [\"تتبدل الراحة والانتماء بحسب المحيط وبحسب من يقف أمامك.\"],\n          high: [\"تؤثر اللغة في المكان الذي تسمح/ين فيه لنفسك بالانفتاح والشعور بأنك جزء منه.\"]\n        },\n        {\n          low: [\"تنجح معظم الأمور المهمة في العثور على كلماتها.\"],\n          mid: [\"هناك تجارب تصل إلى حافة الجملة ثم تبقى هناك.\"],\n          high: [\"تبقى أجزاء مهمة من دون صياغة كاملة، لكنها تظل حاضرة فيك.\"]\n        }\n      ],\n      anchors: [\n        [\"تبقى الدقة نقطة ثبات لديك.\"],\n        [\"يبقى صوتك مألوفًا حتى عندما يتغير الإطار.\"],\n        [\"لديك ثقة نسبية في الطريقة التي يصل بها قصدك.\"],\n        [\"لديك إحساس بالمكان لا يعتمد على اللغة وحدها.\"],\n        [\"عندما يكون الأمر مهمًا، تجد/ين طريقة لقول ما تريد/ين.\"]\n      ],\n      closing: {\n        contrast: [\n          \"الفارق بين الإجابات يبيّن أن كل مساحة لا تطلب منك الجهد نفسه؛ في أماكن تتنفس/ين بحرية، وفي أخرى تزن/ين كل كلمة.\",\n          \"تتغير تجربتك كثيرًا بحسب السياق. في بعض الأماكن تسير الأمور بسهولة، وفي أخرى تتوقف/ين لتراجع/ي وتختار/ي من جديد.\"\n        ],\n        even: [\n          \"إجاباتك متقاربة، لذلك لا يسيطر محور واحد على تجربتك. تتكوّن النتيجة من مجموعة هادئة من التعديلات الصغيرة التي تتكرر خلال اليوم.\",\n          \"لا يوجد عامل واحد يقود نتيجتك. المعنى والصوت ونظرة الآخرين والانتماء تتحرك معًا وتؤثر في بعضها بدرجات متقاربة.\"\n        ],\n        balanced: [\n          \"يظهر محوران أكثر من غيرهما، لكنهما لا يرويان القصة كاملة. إنهما يشيران إلى الأماكن التي تشعر/ين فيها بوضوح أكبر بالانتقال بين اللغات.\",\n          \"نتيجتك متوازنة، لكن جانبين يحتاجان إلى انتباه أكبر. هناك تشعر/ين بوضوح بالمسافة بين ما أردت قوله وما استطاع الوصول.\"\n        ]\n      }\n    }\n  }\n};\n\nfunction setup() {\n  const area = document.getElementById(\"canvasArea\");\n  cnv = createCanvas(area.clientWidth, area.clientHeight);\n  cnv.parent(\"canvasArea\");\n  pixelDensity(1);\n  noSmooth();\n  imageMode(CORNER);\n\n  ticketG = createGraphics(PRINT_W, PRINT_H);\n  ticketG.pixelDensity(1);\n  ticketG.noSmooth();\n\n  // One random identity seed per visitor. It stays stable while that visitor\n  // changes answers during the current session.\n  userSeed = generateUserSeed();\n\n  setupQuestionsUI();\n  setupLanguageTabs();\n  setupPrintControl();\n  setupSharedFooterControls();\n  updateLanguageUI();\n  tryLoadFont();\n  markTicketDirty();\n}\n\nfunction tryLoadFont() {\n  // Use the CSS @font-face instead of p5.loadFont(). p5.Font draws glyph paths\n  // in source order and does not reliably apply Arabic/Hebrew bidi shaping.\n  // Native Canvas text with direction=\"rtl\" keeps letters connected and ordered.\n  if (document.fonts && document.fonts.load) {\n    document.fonts\n      .load('32px \"SimplerMono\"')\n      .then(function() {\n        fontReady = true;\n        markTicketDirty();\n      })\n      .catch(function() {\n        console.warn(\"Could not load SimplerPro_HLAR_Mono-Regular 2.otf. Falling back to Arial.\");\n        fontReady = false;\n        markTicketDirty();\n      });\n  } else {\n    fontReady = false;\n    markTicketDirty();\n  }\n}\n\nfunction draw() {\n  background(GRAY_BG);\n  if (ticketDirty) {\n    renderHighResolutionTicket();\n  }\n  drawTicketPreview();\n}\n\nfunction setupLanguageTabs() {\n  const projectTitle = document.getElementById(\"projectTitle\");\n  if (projectTitle) {\n    projectTitle.addEventListener(\"click\", function(event) {\n      event.preventDefault();\n      event.stopPropagation();\n      if (window.parent && window.parent !== window && typeof window.parent.closeReflectionTicket === \"function\") {\n        window.parent.closeReflectionTicket();\n        if (typeof window.parent.returnToMainGridFromNavigation === \"function\") {\n          window.parent.returnToMainGridFromNavigation();\n        }\n      }\n    });\n  }\n}\n\nfunction updateLanguageUI() {\n  ticketLang = currentLang;\n  document.body.dataset.ticketLanguage = currentLang;\n  markTicketDirty();\n}\n\nfunction renderQuestions() {\n  const panel = document.getElementById(\"questionsInner\");\n  const hebrewQuestions = CONTENT.he.questions;\n  const arabicQuestions = CONTENT.ar.questions;\n  const hebrewAnchors = CONTENT.he.scaleAnchors;\n  const arabicAnchors = CONTENT.ar.scaleAnchors;\n  panel.innerHTML = \"\";\n\n  for (let i = 0; i < hebrewQuestions.length; i++) {\n    const block = document.createElement(\"section\");\n    block.className = \"questionBlock\";\n    block.setAttribute(\"aria-labelledby\", \"question-he-\" + (i + 1));\n\n    const qText = document.createElement(\"div\");\n    qText.className = \"questionText overlapText\";\n\n    const qHe = document.createElement(\"span\");\n    qHe.className = \"hebrewLayer\";\n    qHe.lang = \"he\";\n    qHe.id = \"question-he-\" + (i + 1);\n    qHe.textContent = hebrewQuestions[i];\n\n    const qAr = document.createElement(\"span\");\n    qAr.className = \"arabicLayer\";\n    qAr.lang = \"ar\";\n    qAr.textContent = arabicQuestions[i];\n\n    qText.appendChild(qHe);\n    qText.appendChild(qAr);\n\n    const row = document.createElement(\"div\");\n    row.className = \"sliderRow\";\n\n    const scale = document.createElement(\"div\");\n    scale.className = \"sliderScale\";\n\n    const trackWrap = document.createElement(\"div\");\n    trackWrap.className = \"sliderTrackWrap\";\n\n    const slider = document.createElement(\"input\");\n    slider.type = \"range\";\n    slider.min = \"1\";\n    slider.max = \"5\";\n    slider.step = \"1\";\n    slider.value = String(answers[i]);\n    slider.id = \"q\" + (i + 1);\n    slider.setAttribute(\"aria-label\", hebrewQuestions[i] + \" / \" + arabicQuestions[i]);\n    slider.setAttribute(\"aria-valuetext\", String(answers[i]));\n\n    const markers = document.createElement(\"div\");\n    markers.className = \"scaleMarkers\";\n    markers.setAttribute(\"aria-hidden\", \"true\");\n    for (let markerIndex = 0; markerIndex < 5; markerIndex++) {\n      markers.appendChild(document.createElement(\"span\"));\n    }\n\n    const anchorRow = document.createElement(\"div\");\n    anchorRow.className = \"anchorRow\";\n\n    for (let anchorIndex = 0; anchorIndex < 3; anchorIndex++) {\n      const anchorItem = document.createElement(\"div\");\n      anchorItem.className = \"anchorItem\";\n\n      const anchorNumber = document.createElement(\"span\");\n      anchorNumber.className = \"anchorNumber\";\n      anchorNumber.textContent = hebrewAnchors[anchorIndex].value;\n\n      const anchorOverlap = document.createElement(\"div\");\n      anchorOverlap.className = \"anchorOverlap overlapText\";\n\n      const anchorHe = document.createElement(\"span\");\n      anchorHe.className = \"hebrewLayer\";\n      anchorHe.lang = \"he\";\n      anchorHe.textContent = hebrewAnchors[anchorIndex].text;\n\n      const anchorAr = document.createElement(\"span\");\n      anchorAr.className = \"arabicLayer\";\n      anchorAr.lang = \"ar\";\n      anchorAr.textContent = arabicAnchors[anchorIndex].text;\n\n      anchorOverlap.appendChild(anchorHe);\n      anchorOverlap.appendChild(anchorAr);\n      anchorItem.appendChild(anchorNumber);\n      anchorItem.appendChild(anchorOverlap);\n      anchorRow.appendChild(anchorItem);\n    }\n\n    const value = document.createElement(\"div\");\n    value.className = \"hiddenValue\";\n    value.id = \"v\" + (i + 1);\n    value.textContent = String(answers[i]);\n\n    updateSliderFill(slider, trackWrap);\n\n    slider.addEventListener(\"input\", function() {\n      answers[i] = Number(slider.value);\n      value.textContent = slider.value;\n      slider.setAttribute(\"aria-valuetext\", slider.value);\n      updateSliderFill(slider, trackWrap);\n      markTicketDirty();\n    });\n\n    trackWrap.appendChild(markers);\n    trackWrap.appendChild(slider);\n    scale.appendChild(trackWrap);\n    scale.appendChild(anchorRow);\n    row.appendChild(scale);\n\n    block.appendChild(qText);\n    block.appendChild(row);\n    block.appendChild(value);\n    panel.appendChild(block);\n  }\n}\n\nfunction updateSliderFill(slider, trackWrap) {\n  const min = Number(slider.min || 0);\n  const max = Number(slider.max || 100);\n  const value = Number(slider.value);\n  const percentage = max === min ? 0 : ((value - min) / (max - min)) * 100;\n  trackWrap.style.setProperty(\"--fill-percent\", percentage + \"%\");\n}\n\nfunction setupQuestionsUI() {\n  renderQuestions();\n}\n\nfunction markTicketDirty() {\n  patternSeed = makeSeedFromAnswers();\n  ticketDirty = true;\n}\n\nfunction generateUserSeed() {\n  // crypto gives different visitors different patterns even when their answers match.\n  if (window.crypto && window.crypto.getRandomValues) {\n    const values = new Uint32Array(1);\n    window.crypto.getRandomValues(values);\n    return values[0] % 900000 + 100000;\n  }\n\n  return Math.floor((Date.now() + Math.random() * 1000000) % 900000) + 100000;\n}\n\nfunction makeSeedFromAnswers() {\n  const answerSeed =\n    answers[0] * 101 +\n    answers[1] * 1009 +\n    answers[2] * 2017 +\n    answers[3] * 3011 +\n    answers[4] * 4001;\n\n  // Keep the visitor-specific seed and answer structure in the same deterministic code.\n  return Math.abs((userSeed * 37 + answerSeed * 97) % 100000000);\n}\n\nfunction windowResized() {\n  const area = document.getElementById(\"canvasArea\");\n  resizeCanvas(area.clientWidth, area.clientHeight);\n}\n\nfunction setupPrintControl() {\n  const printButton = document.getElementById(\"printButton\");\n\n  if (printButton) {\n    printButton.addEventListener(\"click\", finishAndPrint);\n  }\n\n  // Global listener works even while a slider or another control has focus.\n  window.addEventListener(\"keydown\", function(event) {\n    if (\n      event.key.toLowerCase() === \"p\" &&\n      !event.ctrlKey &&\n      !event.metaKey &&\n      !event.altKey\n    ) {\n      event.preventDefault();\n      finishAndPrint();\n    }\n  });\n}\n\n\nfunction setupSharedFooterControls() {\n  const arEye = document.getElementById(\"footerArabicEye\");\n  const heEye = document.getElementById(\"footerHebrewEye\");\n\n  if (arEye) arEye.addEventListener(\"click\", function() {\n    if (window.parent && window.parent !== window && typeof window.parent.selectPagmarLens === \"function\") {\n      window.parent.selectPagmarLens(\"red\");\n    }\n  });\n\n  if (heEye) heEye.addEventListener(\"click\", function() {\n    if (window.parent && window.parent !== window && typeof window.parent.selectPagmarLens === \"function\") {\n      window.parent.selectPagmarLens(\"cyan\");\n    }\n  });\n}\n\nfunction drawTicketPreview() {\n  const maxW = Math.min(width * 0.92, 1020);\n  const fitByWidth = width * 0.78;\n  const fitByHeight = height * 0.86 / PRINT_RATIO;\n\n  let previewW = Math.min(fitByWidth, fitByHeight, maxW);\n  previewW = Math.max(270, previewW);\n\n  const previewH = previewW * PRINT_RATIO;\n  const x = width / 2 - previewW / 2;\n  const y = height / 2 - previewH / 2;\n\n  image(ticketG, x, y, previewW, previewH);\n}\n\nfunction finishAndPrint() {\n  renderHighResolutionTicket();\n\n  const canvasForExport = ticketG.canvas || ticketG.elt;\n  const dataUrl = canvasForExport.toDataURL(\"image/png\");\n\n  // Use a dedicated print window with a strict A6 landscape page definition.\n  // This is more reliable than trying to print the interactive UI page itself.\n  const printWindow = window.open(\"\", \"reflectionTicketPrint\", \"width=900,height=700\");\n\n  if (!printWindow) {\n    alert(\"Please allow pop-ups so the A6 print window can open.\");\n    return;\n  }\n\n  const printHtml = `<!DOCTYPE html>\n<html>\n<head>\n  <meta charset=\"UTF-8\" />\n  <title>Print A6 Ticket</title>\n  <style>\n    @page {\n      size: 148mm 105mm;\n      margin: 0;\n    }\n    html, body {\n      margin: 0;\n      padding: 0;\n      width: 148mm;\n      height: 105mm;\n      overflow: hidden;\n      background: #ffffff;\n    }\n    body {\n      display: flex;\n      align-items: center;\n      justify-content: center;\n    }\n    img {\n      display: block;\n      width: 148mm;\n      height: 105mm;\n      object-fit: fill;\n      image-rendering: auto;\n      -webkit-print-color-adjust: exact;\n      print-color-adjust: exact;\n    }\n  </style>\n</head>\n<body>\n  <img id=\"ticketImage\" src=\"${dataUrl}\" alt=\"A6 ticket\" />\n  <script>\n    const img = document.getElementById(\"ticketImage\");\n    function runPrint() {\n      setTimeout(function() {\n        window.focus();\n        window.print();\n      }, 80);\n    }\n    if (img.complete) {\n      runPrint();\n    } else {\n      img.onload = runPrint;\n    }\n    window.onafterprint = function() { window.close(); };\n  <\\/script>\n</body>\n</html>`;\n\n  printWindow.document.open();\n  printWindow.document.write(printHtml);\n  printWindow.document.close();\n}\n\nfunction saveHighResTicketPNG() {\n  renderHighResolutionTicket();\n\n  const canvasForExport = ticketG.canvas || ticketG.elt;\n\n  canvasToPngBlobWithDpi(canvasForExport, EXPORT_DPI)\n    .then(function(blob) {\n      const link = document.createElement(\"a\");\n      const url = URL.createObjectURL(blob);\n\n      link.download =\n        \"my_reflection_A6_landscape_300dpi_\" + patternSeed + \".png\";\n      link.href = url;\n      document.body.appendChild(link);\n      link.click();\n      link.remove();\n\n      setTimeout(function() {\n        URL.revokeObjectURL(url);\n      }, 1000);\n    })\n    .catch(function(error) {\n      console.error(\"Could not save the A6 PNG with DPI metadata:\", error);\n\n      // Safe fallback: the pixel dimensions are still exact A6 at 300 DPI.\n      const link = document.createElement(\"a\");\n      link.download =\n        \"my_reflection_A6_landscape_1748x1240_\" + patternSeed + \".png\";\n      link.href = canvasForExport.toDataURL(\"image/png\");\n      link.click();\n    });\n}\n\n/**\n * Exports the canvas as a PNG and inserts a pHYs chunk so design/print\n * applications recognize the file as 300 DPI, not merely as a pixel image.\n */\nasync function canvasToPngBlobWithDpi(canvasElement, dpi) {\n  const originalBlob = await new Promise(function(resolve, reject) {\n    canvasElement.toBlob(function(blob) {\n      if (blob) resolve(blob);\n      else reject(new Error(\"Canvas PNG export returned no data.\"));\n    }, \"image/png\");\n  });\n\n  const originalBytes = new Uint8Array(await originalBlob.arrayBuffer());\n  const pngBytes = insertPngPhysicalResolution(originalBytes, dpi);\n\n  return new Blob([pngBytes], { type: \"image/png\" });\n}\n\nfunction insertPngPhysicalResolution(pngBytes, dpi) {\n  const PNG_SIGNATURE_LENGTH = 8;\n  const IHDR_TOTAL_LENGTH = 25; // 4 length + 4 type + 13 data + 4 CRC\n  const insertAt = PNG_SIGNATURE_LENGTH + IHDR_TOTAL_LENGTH;\n  const pixelsPerMeter = Math.round(dpi / 0.0254);\n\n  const data = new Uint8Array(9);\n  writeUint32BE(data, 0, pixelsPerMeter);\n  writeUint32BE(data, 4, pixelsPerMeter);\n  data[8] = 1; // Unit specifier: metres\n\n  const type = new Uint8Array([112, 72, 89, 115]); // \"pHYs\"\n  const chunk = new Uint8Array(4 + 4 + data.length + 4);\n\n  writeUint32BE(chunk, 0, data.length);\n  chunk.set(type, 4);\n  chunk.set(data, 8);\n\n  const crcInput = new Uint8Array(type.length + data.length);\n  crcInput.set(type, 0);\n  crcInput.set(data, type.length);\n  writeUint32BE(chunk, 8 + data.length, crc32(crcInput));\n\n  const output = new Uint8Array(pngBytes.length + chunk.length);\n  output.set(pngBytes.slice(0, insertAt), 0);\n  output.set(chunk, insertAt);\n  output.set(pngBytes.slice(insertAt), insertAt + chunk.length);\n\n  return output;\n}\n\nfunction writeUint32BE(bytes, offset, value) {\n  bytes[offset] = (value >>> 24) & 255;\n  bytes[offset + 1] = (value >>> 16) & 255;\n  bytes[offset + 2] = (value >>> 8) & 255;\n  bytes[offset + 3] = value & 255;\n}\n\nfunction crc32(bytes) {\n  let crc = 0xffffffff;\n\n  for (let i = 0; i < bytes.length; i++) {\n    crc ^= bytes[i];\n\n    for (let bit = 0; bit < 8; bit++) {\n      const mask = -(crc & 1);\n      crc = (crc >>> 1) ^ (0xedb88320 & mask);\n    }\n  }\n\n  return (crc ^ 0xffffffff) >>> 0;\n}\n\nfunction resetAnswers() {\n  ticketLang = currentLang;\n  answers = [1, 2, 2, 2, 2];\n\n  // RESET means a new visitor, so the same answer set does not repeat the previous pattern.\n  userSeed = generateUserSeed();\n\n  renderQuestions();\n  markTicketDirty();\n}\n\nfunction renderHighResolutionTicket() {\n  ticketG.clear();\n  ticketG.background(255);\n  ticketG.noSmooth();\n  drawTicketOn(ticketG, 0, 0, PRINT_W, PRINT_H);\n  ticketDirty = false;\n}\n\nfunction getTicketLayout(x, y, w, h) {\n  // Exact landscape proportions taken from the approved reference layout.\n  // The pattern nearly bleeds on three sides; the text has a compact left margin.\n  const pagePadding = w * 0.024;\n  const headerY = y + h * 0.079;\n\n  const patternY = y + h * 0.009;\n  const patternH = h * 0.974;\n\n  // The pattern area is made from two adjacent square strips. Each strip holds\n  // five square modules stacked vertically, matching the approved reference.\n  const singleStripW = patternH / PATTERN_BLOCK_COUNT;\n  const patternGap = Math.max(0, w * 0.0008);\n  const patternW = singleStripW * PATTERN_STRIP_COUNT + patternGap * (PATTERN_STRIP_COUNT - 1);\n  const patternRight = x + w * 0.992;\n  const patternX = patternRight - patternW;\n\n  const contentX = x + w * 0.024;\n  // Keep the text block closer to the pattern, following the approved reference.\n  const contentRight = patternX - w * 0.026;\n  const contentW = contentRight - contentX;\n  const columnGap = patternX - contentRight;\n\n  return {\n    pagePadding,\n    columnGap,\n    headerY,\n    patternX,\n    patternY,\n    patternW,\n    patternH,\n    singleStripW,\n    patternGap,\n    contentX,\n    contentRight,\n    contentW\n  };\n}\n\nfunction drawTicketOn(g, x, y, w, h) {\n  const layout = getTicketLayout(x, y, w, h);\n\n  g.push();\n\n  // No frame. The page edge and internal alignment create the structure.\n  g.background(255);\n  g.noStroke();\n\n  drawTicketHeaderOn(g, x, y, w, h, layout);\n  drawPatternOn(g, x, y, w, h, layout);\n  drawTicketBodyOn(g, x, y, w, h, layout);\n  drawBarcodeOn(g, x, y, w, h, layout);\n\n  g.pop();\n}\n\nfunction drawTicketHeaderOn(g, x, y, w, h, layout) {\n  const he = CONTENT.he;\n  const ar = CONTENT.ar;\n\n  g.push();\n  g.textFont(getTicketFont());\n  g.noStroke();\n  g.textStyle(BOLD);\n  g.textSize(h * 0.058);\n\n  drawBilingualRTLText(\n    g,\n    he.ticketTitle,\n    ar.ticketTitle,\n    layout.contentRight,\n    layout.headerY,\n    {\n      baseline: \"middle\",\n      offset: h * 0.0016\n    }\n  );\n\n  // The project marker is intentionally omitted from the printed face so the\n  // title keeps the same clean top spacing as the approved reference.\n  g.pop();\n}\n\nfunction getTicketFont() {\n  // A font-family string forces p5 to use the browser's native Canvas text\n  // renderer, which supports RTL ordering and Arabic contextual shaping.\n  return fontReady ? \"SimplerMono\" : \"Arial\";\n}\n\nfunction drawCanvasText(g, textValue, x, y, options) {\n  const opts = options || {};\n  const ctx = g.drawingContext;\n\n  ctx.save();\n  ctx.direction = opts.direction || \"rtl\";\n  ctx.textAlign = opts.align || \"right\";\n  ctx.textBaseline = opts.baseline || \"top\";\n  ctx.fillText(String(textValue), x, y);\n  ctx.restore();\n}\n\nfunction drawRTLText(g, textValue, x, y, baseline) {\n  drawCanvasText(g, textValue, x, y, {\n    direction: \"rtl\",\n    align: \"right\",\n    baseline: baseline || \"top\"\n  });\n}\n\nfunction drawLTRText(g, textValue, x, y, align, baseline) {\n  drawCanvasText(g, textValue, x, y, {\n    direction: \"ltr\",\n    align: align || \"left\",\n    baseline: baseline || \"top\"\n  });\n}\n\nfunction drawBilingualRTLText(g, hebrewText, arabicText, x, y, options) {\n  const opts = options || {};\n  const offset = opts.offset === undefined ? 1.5 : opts.offset;\n  const baseline = opts.baseline || \"top\";\n  const ctx = g.drawingContext;\n\n  ctx.save();\n  ctx.globalCompositeOperation = \"multiply\";\n\n  g.fill(ARABIC_TEXT_COLOR);\n  drawCanvasText(g, arabicText, x - offset, y - offset * 0.58, {\n    direction: \"rtl\",\n    align: \"right\",\n    baseline\n  });\n\n  g.fill(HEBREW_TEXT_COLOR);\n  drawCanvasText(g, hebrewText, x + offset, y + offset * 0.58, {\n    direction: \"rtl\",\n    align: \"right\",\n    baseline\n  });\n\n  ctx.restore();\n}\n\nfunction drawBilingualLines(g, hebrewLines, arabicLines, x, startY, lineHeight, offset) {\n  const ctx = g.drawingContext;\n  const shift = offset === undefined ? 1.5 : offset;\n\n  ctx.save();\n  ctx.globalCompositeOperation = \"multiply\";\n\n  g.fill(ARABIC_TEXT_COLOR);\n  for (let i = 0; i < arabicLines.length; i++) {\n    drawRTLText(g, arabicLines[i], x - shift, startY + i * lineHeight - shift * 0.58);\n  }\n\n  g.fill(HEBREW_TEXT_COLOR);\n  for (let i = 0; i < hebrewLines.length; i++) {\n    drawRTLText(g, hebrewLines[i], x + shift, startY + i * lineHeight + shift * 0.58);\n  }\n\n  ctx.restore();\n}\n\nfunction drawPatternOn(g, x, y, w, h, layout) {\n  const px = layout.patternX;\n  const py = layout.patternY;\n  const patternW = layout.patternW;\n  const patternH = layout.patternH;\n  const stripW = layout.singleStripW;\n  const stripGap = layout.patternGap;\n\n  // Two adjacent strips, each made from five exact square modules. Each module\n  // uses an 18 × 18 grid, so every colored unit remains a perfect square.\n  const medallionCount = PATTERN_BLOCK_COUNT;\n  const stripCount = PATTERN_STRIP_COUNT;\n  const cols = 18;\n  const rowsPerMedallion = 18;\n  const rows = rowsPerMedallion * medallionCount;\n  const halfCols = cols / 2;\n  const cell = stripW / cols;\n  const actualH = rows * cell;\n  const top = py + (patternH - actualH) * 0.5;\n  const medallionH = rowsPerMedallion;\n\n  const meaningLoss = answers[0];\n  const languageShift = answers[1];\n  const misreading = answers[2];\n  const belonging = answers[3];\n  const silence = answers[4];\n\n  const centerGap = Math.floor(mapValue(languageShift, 1, 5, 0, 2.2));\n  const missingCenterChance = mapValue(meaningLoss, 1, 5, 0.02, 0.42);\n  const pairDisplacementChance = mapValue(misreading, 1, 5, 0.01, 0.22);\n  const frameStrength = mapValue(belonging, 1, 5, 0.35, 0.95);\n  const silenceChance = mapValue(silence, 1, 5, 0.01, 0.25);\n\n  g.push();\n  g.noStroke();\n  g.fill(255);\n  g.rect(px, top, patternW, actualH);\n\n  for (let stripIndex = 0; stripIndex < stripCount; stripIndex++) {\n    const stripX = px + stripIndex * (stripW + stripGap);\n\n    for (let row = 0; row < rows; row++) {\n      const medallionIndex = Math.min(\n        medallionCount - 1,\n        Math.floor(row / rowsPerMedallion)\n      );\n\n      const localRow = row - medallionIndex * rowsPerMedallion;\n      const localCenterY = (medallionH - 1) * 0.5;\n      const normalizedY = Math.abs(localRow - localCenterY) / Math.max(1, localCenterY);\n\n      const motifVariant = Math.floor(\n        patternHash(201 + medallionIndex + stripIndex * 17, medallionIndex, stripIndex) * 4\n      );\n      const paletteFlip = patternHash(211 + stripIndex * 13, medallionIndex, userSeed) > 0.5;\n\n      for (let halfIndex = 0; halfIndex < halfCols; halfIndex++) {\n        const distanceFromCenter = halfCols - 1 - halfIndex;\n        if (distanceFromCenter < centerGap) continue;\n\n        const normalizedX = distanceFromCenter / Math.max(1, halfCols - 1);\n        const diamondDistance = normalizedX + normalizedY;\n        const innerDiamondDistance = normalizedX * 1.28 + normalizedY * 1.05;\n\n        const outerBandThickness = 0.075 + frameStrength * 0.035;\n        const onOuterDiamond = Math.abs(diamondDistance - 1.0) < outerBandThickness;\n        const onInnerDiamond = Math.abs(innerDiamondDistance - 0.58) < 0.075;\n\n        const centerGlyph =\n          distanceFromCenter <= 2 &&\n          Math.abs(localRow - localCenterY) <= 2.4 &&\n          ((distanceFromCenter + Math.round(localRow)) % 2 === motifVariant % 2);\n\n        const diagonalThreadA =\n          motifVariant === 0 &&\n          Math.abs(normalizedX - normalizedY * 0.72) < 0.08;\n\n        const diagonalThreadB =\n          motifVariant === 1 &&\n          Math.abs(normalizedX + normalizedY * 0.58 - 0.72) < 0.07;\n\n        const steppedThread =\n          motifVariant === 2 &&\n          ((distanceFromCenter + Math.floor(localRow)) % 4 === 0) &&\n          diamondDistance < 0.92;\n\n        const floatingMarks =\n          motifVariant === 3 &&\n          diamondDistance < 0.9 &&\n          patternHash(230 + medallionIndex + stripIndex * 19, distanceFromCenter, row) < 0.20;\n\n        let active =\n          onOuterDiamond ||\n          onInnerDiamond ||\n          centerGlyph ||\n          diagonalThreadA ||\n          diagonalThreadB ||\n          steppedThread ||\n          floatingMarks;\n\n        if (\n          !active &&\n          diamondDistance > 0.82 &&\n          diamondDistance < 1.05 &&\n          patternHash(240 + stripIndex * 7, distanceFromCenter, row) < frameStrength * 0.28\n        ) {\n          active = true;\n        }\n\n        if (!active) continue;\n\n        const centerProximity = 1 - Math.min(1, (normalizedX + normalizedY) * 0.78);\n        if (\n          centerProximity > 0.18 &&\n          patternHash(250 + stripIndex * 5, distanceFromCenter, row) < missingCenterChance * centerProximity\n        ) {\n          continue;\n        }\n\n        if (patternHash(260 + stripIndex * 11, distanceFromCenter, row) < silenceChance) continue;\n\n        let drawDistance = distanceFromCenter;\n        let drawRow = row;\n\n        if (patternHash(270 + stripIndex * 23, distanceFromCenter, row) < pairDisplacementChance) {\n          const verticalDirection =\n            patternHash(271 + stripIndex * 23, distanceFromCenter, row) < 0.5 ? -1 : 1;\n          drawRow += verticalDirection;\n\n          if (patternHash(272 + stripIndex * 23, distanceFromCenter, row) > 0.58) {\n            drawDistance += patternHash(273 + stripIndex * 23, distanceFromCenter, row) < 0.5 ? -1 : 1;\n          }\n        }\n\n        const moduleStartRow = medallionIndex * rowsPerMedallion;\n        const moduleEndRow = moduleStartRow + rowsPerMedallion - 1;\n\n        if (\n          drawDistance < centerGap ||\n          drawDistance >= halfCols ||\n          drawRow < moduleStartRow ||\n          drawRow > moduleEndRow\n        ) {\n          continue;\n        }\n\n        const leftCol = halfCols - 1 - drawDistance;\n        const rightCol = cols - 1 - leftCol;\n\n        const colorNoise = patternHash(\n          290 + medallionIndex + languageShift + stripIndex * 29,\n          distanceFromCenter,\n          row\n        );\n\n        let useRed = onOuterDiamond || centerGlyph;\n        if (paletteFlip) useRed = !useRed;\n        if (colorNoise > 0.72) useRed = !useRed;\n\n        g.fill(useRed ? RED : BLUE);\n\n        const inset = Math.max(1, cell * 0.12);\n        const squareSize = Math.max(1, cell - inset);\n        const drawY = top + drawRow * cell + inset * 0.5;\n\n        drawPatternCell(g, stripX, cell, leftCol, drawY, inset, squareSize);\n        drawPatternCell(g, stripX, cell, rightCol, drawY, inset, squareSize);\n      }\n    }\n  }\n\n  g.pop();\n}\n\nfunction drawPatternCell(g, patternX, cell, column, drawY, inset, squareSize) {\n  const drawX = patternX + column * cell + inset * 0.5;\n  const x1 = Math.round(drawX);\n  const y1 = Math.round(drawY);\n  const side = Math.max(1, Math.round(squareSize));\n  g.rect(x1, y1, side, side);\n}\n\nfunction patternHash(salt, a, b) {\n  const n = Math.sin(\n    salt * 93.173 +\n    a * 127.913 +\n    b * 311.719 +\n    patternSeed * 0.017 +\n    userSeed * 0.00031\n  ) * 43758.5453123;\n\n  return n - Math.floor(n);\n}\n\nfunction fitWrappedText(g, textValue, maxWidth, maxLines, startSize, minSize) {\n  let size = startSize;\n  let lines = [];\n\n  while (size >= minSize) {\n    g.textSize(size);\n    lines = wrapLines(g, textValue, maxWidth);\n    if (lines.length <= maxLines) break;\n    size -= 1;\n  }\n\n  return { size, lines };\n}\n\nfunction fitBilingualWrappedText(g, hebrewText, arabicText, maxWidth, maxLines, startSize, minSize) {\n  let size = startSize;\n  let hebrewLines = [];\n  let arabicLines = [];\n\n  while (size >= minSize) {\n    g.textSize(size);\n    hebrewLines = wrapLines(g, hebrewText, maxWidth);\n    arabicLines = wrapLines(g, arabicText, maxWidth);\n\n    if (hebrewLines.length <= maxLines && arabicLines.length <= maxLines) {\n      break;\n    }\n\n    size -= 1;\n  }\n\n  return { size, hebrewLines, arabicLines };\n}\n\nfunction drawMetricBlocks(g, x, y, activeCount, blockSize, gap) {\n  g.noStroke();\n\n  for (let i = 0; i < 5; i++) {\n    g.fill(i < activeCount ? ANSWER_BLOCK_COLOR : \"#d9d9d9\");\n    g.rect(x + i * (blockSize + gap), y, blockSize, blockSize);\n  }\n}\n\nfunction drawTicketBodyOn(g, x, y, w, h, layout) {\n  const he = CONTENT.he;\n  const ar = CONTENT.ar;\n  const textRight = layout.contentRight;\n  const contentW = layout.contentW;\n  const textOffset = Math.max(1.25, h * 0.00125);\n\n  g.push();\n  g.textFont(getTicketFont());\n  g.noStroke();\n\n  // Both languages are always present. Their overlap is rendered with multiply.\n  const noteY = y + h * 0.190;\n  g.textStyle(NORMAL);\n  g.textSize(h * 0.014);\n  drawBilingualRTLText(g, he.noteLabel, ar.noteLabel, textRight, noteY, {\n    offset: textOffset\n  });\n\n  const hebrewParagraph = getReflectionParagraph(\"he\");\n  const arabicParagraph = getReflectionParagraph(\"ar\");\n  const fitted = fitBilingualWrappedText(\n    g,\n    hebrewParagraph,\n    arabicParagraph,\n    contentW,\n    9,\n    h * 0.029,\n    h * 0.0225\n  );\n\n  g.textStyle(NORMAL);\n  g.textSize(fitted.size);\n  const paragraphLineH = fitted.size * 1.28;\n  const paragraphStartY = y + h * 0.210;\n  drawBilingualLines(\n    g,\n    fitted.hebrewLines,\n    fitted.arabicLines,\n    textRight,\n    paragraphStartY,\n    paragraphLineH,\n    textOffset\n  );\n\n  // Fixed row anchors preserve the exact vertical rhythm of the approved layout.\n  const rowStart = 0.490;\n  const rowEnd = 0.842;\n  const rowStep = (rowEnd - rowStart) / 4;\n  const rowAnchors = Array.from({ length: 5 }, function(_, index) {\n    return rowStart + index * rowStep;\n  });\n  const blockSize = h * 0.025;\n  const blockGap = h * 0.0095;\n  const blocksX = layout.contentX;\n  const blocksTotalW = blockSize * 5 + blockGap * 4;\n  const scoreToTextGap = w * 0.072;\n  const metricTextW = Math.max(\n    h * 0.16,\n    layout.contentRight - (blocksX + blocksTotalW + scoreToTextGap)\n  );\n\n  for (let i = 0; i < 5; i++) {\n    const rowY = y + h * rowAnchors[i];\n    const hebrewLabel = he.labels[i];\n    const arabicLabel = ar.labels[i];\n    const hebrewStatement = he.statements[i][answers[i] - 1];\n    const arabicStatement = ar.statements[i][answers[i] - 1];\n\n    drawMetricBlocks(\n      g,\n      blocksX,\n      rowY + h * 0.009,\n      answers[i],\n      blockSize,\n      blockGap\n    );\n\n    g.fill(92);\n    g.textSize(h * 0.0105);\n    g.textStyle(NORMAL);\n    drawLTRText(\n      g,\n      \"[\" + pad2(answers[i]) + \"]\",\n      blocksX,\n      rowY + blockSize + h * 0.014,\n      \"left\",\n      \"top\"\n    );\n\n    g.textStyle(BOLD);\n    g.textSize(h * 0.0212);\n    drawBilingualRTLText(\n      g,\n      hebrewLabel,\n      arabicLabel,\n      textRight,\n      rowY,\n      { offset: textOffset }\n    );\n\n    g.textStyle(NORMAL);\n    g.textSize(h * 0.0143);\n    const hebrewStatementLines = wrapLines(g, hebrewStatement, metricTextW).slice(0, 2);\n    const arabicStatementLines = wrapLines(g, arabicStatement, metricTextW).slice(0, 2);\n    drawBilingualLines(\n      g,\n      hebrewStatementLines,\n      arabicStatementLines,\n      textRight,\n      rowY + h * 0.0242,\n      h * 0.0182,\n      textOffset * 0.82\n    );\n  }\n\n  // The bilingual footer sits on the final baseline without competing with the readings.\n  const footerY = y + h * 0.952;\n  g.textStyle(NORMAL);\n  g.textSize(h * 0.0118);\n  const hebrewFooterLines = wrapLines(g, he.footerNote, contentW).slice(0, 1);\n  const arabicFooterLines = wrapLines(g, ar.footerNote, contentW).slice(0, 1);\n  drawBilingualLines(\n    g,\n    hebrewFooterLines,\n    arabicFooterLines,\n    textRight,\n    footerY,\n    h * 0.016,\n    textOffset * 0.75\n  );\n\n  g.pop();\n}\n\nfunction drawBarcodeOn(g, x, y, w, h, layout) {\n  // Kept as an empty hook. The approved landscape face has no barcode block;\n  // removing it prevents the lower-left area from becoming visually compressed.\n}\n\nfunction getReflectionParagraph(lang) {\n  const system = CONTENT[lang].reflectionSystem;\n  const average = answers.reduce((sum, value) => sum + value, 0) / answers.length;\n  const ranked = answers\n    .map((value, index) => ({ value, index }))\n    .sort((a, b) => b.value - a.value || a.index - b.index);\n\n  const topOne = ranked[0];\n  const topTwo = ranked[1];\n  const lowest = ranked.slice().sort((a, b) => a.value - b.value || a.index - b.index)[0];\n  const maximum = ranked[0].value;\n  const minimum = lowest.value;\n  const spread = maximum - minimum;\n\n  const openingBand = average <= 2.2 ? \"low\" : average >= 3.8 ? \"high\" : \"mid\";\n  const topOneBand = getReflectionScoreBand(topOne.value);\n  const topTwoBand = getReflectionScoreBand(topTwo.value);\n\n  const closingKey = spread >= 3 ? \"contrast\" : spread <= 1 ? \"even\" : \"balanced\";\n\n  const sentences = [\n    chooseReflectionText(system.opening[openingBand], 10),\n    chooseReflectionText(system.dimensions[topOne.index][topOneBand], 20 + topOne.index),\n    chooseReflectionText(system.dimensions[topTwo.index][topTwoBand], 30 + topTwo.index),\n    chooseReflectionText(system.closing[closingKey], 50)\n  ];\n\n  return sentences.filter(Boolean).join(\" \");\n}\n\nfunction getReflectionScoreBand(value) {\n  if (value <= 2) return \"low\";\n  if (value >= 4) return \"high\";\n  return \"mid\";\n}\n\nfunction chooseReflectionText(options, salt) {\n  if (!Array.isArray(options) || options.length === 0) return \"\";\n\n  const raw = Math.sin(\n    userSeed * 0.000127 +\n    patternSeed * 0.00173 +\n    salt * 41.771\n  ) * 43758.5453123;\n\n  const fraction = raw - Math.floor(raw);\n  const index = Math.min(options.length - 1, Math.floor(fraction * options.length));\n  return options[index];\n}\n\nfunction drawTextByLang(g, textValue, x, y) {\n  // Both Arabic and Hebrew are RTL languages.\n  drawRTLText(g, textValue, x, y);\n}\n\nfunction wrapLines(g, textValue, maxWidth) {\n  const words = String(textValue).trim().split(/\\s+/);\n  const lines = [];\n  const ctx = g.drawingContext;\n  let current = \"\";\n\n  ctx.save();\n  ctx.direction = \"rtl\";\n\n  for (let i = 0; i < words.length; i++) {\n    // Keep the logical word order. Native Canvas bidi rendering displays it RTL.\n    const test = current ? current + \" \" + words[i] : words[i];\n    if (ctx.measureText(test).width <= maxWidth || current === \"\") {\n      current = test;\n    } else {\n      lines.push(current);\n      current = words[i];\n    }\n  }\n\n  ctx.restore();\n  if (current) lines.push(current);\n  return lines;\n}\n\nfunction drawLines(g, lines, x, startY, lineHeight, direction) {\n  const useRTL = direction !== \"ltr\";\n  for (let i = 0; i < lines.length; i++) {\n    if (useRTL) {\n      drawRTLText(g, lines[i], x, startY + i * lineHeight);\n    } else {\n      drawLTRText(g, lines[i], x, startY + i * lineHeight, \"left\", \"top\");\n    }\n  }\n}\n\nfunction noiseHash(salt, a, b) {\n  const answerCode = answers[0] * 101 + answers[1] * 211 + answers[2] * 307 + answers[3] * 401 + answers[4] * 503 + patternSeed * 0.03;\n  const n = Math.sin(salt * 91.7 + a * 127.1 + b * 311.7 + answerCode) * 43758.5453123;\n  return n - Math.floor(n);\n}\n\nfunction mapValue(value, inMin, inMax, outMin, outMax) {\n  return outMin + (outMax - outMin) * ((value - inMin) / (inMax - inMin));\n}\n\nfunction pad2(value) {\n  return String(value).padStart(2, \"0\");\n}\n</script>\n</body>\n</html>";
+const REFLECTION_TICKET_EMBEDDED_HTML = "<!DOCTYPE html>\n<html lang=\"he\" dir=\"rtl\">\n<head>\n  <base href=\"./\" />\n  <meta charset=\"UTF-8\" />\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n  <title>My Reflection Ticket</title>\n  <script src=\"https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js\"></script>\n  <style>\n    @font-face {\n      font-family: \"SimplerMono\";\n      src: url(\"SimplerPro_HLAR_Mono-Regular 2.otf\") format(\"opentype\");\n      font-display: swap;\n    }\n\n    @font-face {\n      font-family: \"AlfaBravoMedium\";\n      src: url(\"AlfaBravo-Medium.otf\") format(\"opentype\");\n      font-style: normal;\n      font-weight: 500;\n      font-display: swap;\n    }\n\n    :root {\n      --bg: #eeeeee;\n      --line: #b5b5b5;\n      --text: #111111;\n      --muted: #6c6c6c;\n      --red: #ff1d25;\n      --blue: #00f0ff;\n      --arabic-ui: #ff3535;\n      --hebrew-ui: #2ef5ff;\n      --topbar-h: clamp(56px, 10.5vh, 100px);\n      --footer-h: var(--topbar-h);\n      --type-ui: clamp(13px, 1.6vh, 16px);\n      --type-nav: clamp(14px, 1.9vh, 18px);\n      --type-title: clamp(30px, 4.3vh, 46px);\n      --type-body: clamp(14px, 1.8vh, 18px);\n    }\n\n    * {\n      box-sizing: border-box;\n    }\n\n    html, body {\n      margin: 0;\n      width: 100%;\n      height: 100%;\n      overflow: hidden;\n      background: var(--bg);\n      color: var(--text);\n      font-family: \"SimplerMono\", Arial, Helvetica, sans-serif;\n    }\n\n    body {\n      display: flex;\n      flex-direction: column;\n    }\n\n    #topBar {\n      height: var(--topbar-h);\n      border-bottom: 0.5px solid var(--line);\n      font-family: \"AlfaBravoMedium\", \"SimplerMono\", Arial, Helvetica, sans-serif;\n      font-weight: 500;\n      display: none;\n      grid-template-columns: 22% 52% 26%;\n      align-items: center;\n      gap: 0;\n      padding: 0;\n      background: var(--bg);\n      direction: ltr;\n    }\n\n    #foundStatus {\n      justify-self: start;\n      padding-left: 3.7vw;\n      display: flex;\n      align-items: center;\n      gap: 12px;\n      min-width: 0;\n      direction: ltr;\n      font-size: var(--type-ui);\n      line-height: 1;\n    }\n\n    #foundNumber {\n      width: 48px;\n      flex: 0 0 48px;\n      text-align: left;\n      direction: ltr;\n      font-variant-numeric: tabular-nums;\n    }\n\n    #foundNumber > span {\n      direction: ltr;\n      unicode-bidi: isolate;\n      text-align: left;\n    }\n\n    .overlapText {\n      display: grid;\n      position: relative;\n      min-width: 0;\n      isolation: isolate;\n    }\n\n    .overlapText > span {\n      grid-area: 1 / 1;\n      display: block;\n      direction: rtl;\n      unicode-bidi: plaintext;\n      mix-blend-mode: multiply;\n    }\n\n    /* The numeric counter must stay visibly red + cyan instead of becoming black. */\n    #foundNumber > span {\n      mix-blend-mode: normal;\n    }\n\n    .hebrewLayer {\n      color: var(--hebrew-ui);\n      transform: translate(2.1px, 1.1px);\n      opacity: 1;\n      z-index: 2;\n    }\n\n    .arabicLayer {\n      color: var(--arabic-ui);\n      transform: translate(-2.1px, -1.1px);\n      opacity: 1;\n      z-index: 1;\n    }\n\n    #foundOverlap {\n      min-width: 92px;\n      text-align: right;\n      font-size: inherit;\n      line-height: 1;\n    }\n\n    #wordNavigation {\n      justify-self: center;\n      width: 100%;\n      max-width: 650px;\n      display: flex;\n      align-items: center;\n      justify-content: center;\n      gap: clamp(8px, 1vw, 18px);\n      direction: rtl;\n      overflow: hidden;\n    }\n\n    .navWord {\n      position: relative;\n      flex: 0 0 auto;\n      min-width: 46px;\n      text-align: center;\n      font-size: var(--type-nav);\n      line-height: 1;\n      white-space: nowrap;\n    }\n\n    #projectTitle {\n      justify-self: end;\n      width: 100%;\n      padding-right: 2.6vw;\n      text-align: right;\n      font-size: var(--type-title);\n      font-weight: 500;\n      letter-spacing: -0.04em;\n      line-height: 0.9;\n      cursor: pointer;\n    }\n\n    #projectTitle .hebrewLayer,\n    #projectTitle .arabicLayer {\n      text-align: right;\n    }\n\n    #mainArea {\n      height: calc(100vh - var(--footer-h));\n      display: grid;\n      grid-template-columns: minmax(0, 2.22fr) minmax(430px, 0.78fr);\n      background: var(--bg);\n      direction: ltr;\n    }\n\n    #canvasPane,\n    #questionsPane {\n      min-width: 0;\n      min-height: 0;\n      position: relative;\n    }\n\n    #canvasPane {\n      border-right: 0.5px solid var(--line);\n      display: flex;\n      align-items: center;\n      justify-content: center;\n      overflow: hidden;\n    }\n\n    #canvasArea {\n      width: 100%;\n      height: 100%;\n      position: relative;\n      display: flex;\n      align-items: center;\n      justify-content: center;\n    }\n\n    #questionsPane {\n      overflow-y: hidden;\n      overflow-x: hidden;\n      direction: rtl;\n      padding: clamp(14px, 2vh, 24px) clamp(22px, 2.3vw, 44px);\n      scrollbar-width: none;\n      display: flex;\n      align-items: stretch;\n    }\n\n    #questionsPane::-webkit-scrollbar {\n      display: none;\n    }\n\n    #questionsInner {\n      width: 100%;\n      max-width: 560px;\n      height: 100%;\n      min-height: 0;\n      margin: 0 auto;\n      display: flex;\n      flex-direction: column;\n      justify-content: space-between;\n      gap: clamp(3px, 0.7vh, 8px);\n    }\n\n    .questionBlock {\n      width: 100%;\n      min-height: 0;\n      margin: 0;\n      text-align: right;\n      flex: 1 1 0;\n      display: flex;\n      flex-direction: column;\n      justify-content: center;\n    }\n\n    .questionText {\n      width: 100%;\n      min-height: 0;\n      margin-bottom: clamp(3px, 0.45vh, 7px);\n      font-size: var(--type-body);\n      line-height: 1.08;\n      font-weight: 400;\n      letter-spacing: 0;\n      text-align: right;\n    }\n\n    .questionText > span {\n      text-align: right;\n      max-width: 100%;\n    }\n\n    .sliderRow {\n      width: 100%;\n      display: flex;\n      justify-content: center;\n      align-items: center;\n      direction: ltr;\n    }\n\n    .sliderScale {\n      width: min(440px, 100%);\n      direction: ltr;\n    }\n\n    .sliderTrackWrap {\n      --fill-percent: 0%;\n      --slider-point-size: 3px;\n      --slider-thumb-size: 4px;\n      position: relative;\n      width: 100%;\n      height: 18px;\n    }\n\n    /* The dashed remainder uses the exact same centerline as the points. */\n    .sliderTrackWrap::before {\n      content: \"\";\n      position: absolute;\n      z-index: 0;\n      left: 0;\n      right: 0;\n      top: 50%;\n      height: 0.5px;\n      transform: translateY(-50%);\n      background: repeating-linear-gradient(\n        to right,\n        rgba(17, 17, 17, 0.20) 0,\n        rgba(17, 17, 17, 0.20) 11px,\n        transparent 11px,\n        transparent 30px\n      );\n      pointer-events: none;\n    }\n\n    /* The solid section ends at the exact center of the selected point. */\n    .sliderTrackWrap::after {\n      content: \"\";\n      position: absolute;\n      z-index: 1;\n      left: 0;\n      top: 50%;\n      width: var(--fill-percent);\n      height: 0.5px;\n      transform: translateY(-50%);\n      background: #111;\n      pointer-events: none;\n    }\n\n    input[type=\"range\"] {\n      -webkit-appearance: none;\n      appearance: none;\n      position: absolute;\n      z-index: 3;\n      top: 0;\n      left: calc(var(--slider-thumb-size) / -2);\n      width: calc(100% + var(--slider-thumb-size));\n      height: 100%;\n      margin: 0;\n      padding: 0;\n      background: transparent;\n      outline: none;\n      cursor: pointer;\n      touch-action: none;\n    }\n\n    input[type=\"range\"]::-webkit-slider-runnable-track {\n      height: 0.5px;\n      background: transparent;\n    }\n\n    input[type=\"range\"]::-webkit-slider-thumb {\n      -webkit-appearance: none;\n      appearance: none;\n      width: 4px;\n      height: 4px;\n      border-radius: 50%;\n      background: #111111;\n      border: 0;\n      margin-top: -1.5px;\n    }\n\n    input[type=\"range\"]::-moz-range-track {\n      height: 0.5px;\n      background: transparent;\n    }\n\n    input[type=\"range\"]::-moz-range-progress {\n      height: 0.5px;\n      background: transparent;\n    }\n\n    input[type=\"range\"]::-moz-range-thumb {\n      width: 4px;\n      height: 4px;\n      border-radius: 50%;\n      background: #111111;\n      border: 0;\n    }\n\n    .scaleMarkers {\n      position: absolute;\n      z-index: 2;\n      inset: 0;\n      pointer-events: none;\n    }\n\n    .scaleMarkers span {\n      position: absolute;\n      top: 50%;\n      width: var(--slider-point-size);\n      height: var(--slider-point-size);\n      border-radius: 50%;\n      background: #111;\n      transform: translate(-50%, -50%);\n    }\n\n    .scaleMarkers span:nth-child(1) { left: 0%; }\n    .scaleMarkers span:nth-child(2) { left: 25%; }\n    .scaleMarkers span:nth-child(3) { left: 50%; }\n    .scaleMarkers span:nth-child(4) { left: 75%; }\n    .scaleMarkers span:nth-child(5) { left: 100%; }\n\n    .anchorRow {\n      display: grid;\n      grid-template-columns: 1fr 1fr 1fr;\n      align-items: start;\n      margin-top: 2px;\n      direction: ltr;\n    }\n\n    .anchorItem {\n      min-width: 0;\n      font-size: clamp(8px, 1.05vh, 10px);\n      line-height: 1.06;\n      color: var(--muted);\n    }\n\n    .anchorItem:nth-child(1) { text-align: left; }\n    .anchorItem:nth-child(2) { text-align: center; }\n    .anchorItem:nth-child(3) { text-align: right; }\n\n    .anchorNumber {\n      display: block;\n      margin-bottom: 1px;\n      color: #111;\n      font-family: \"SimplerMono\", monospace;\n      font-size: clamp(7px, 0.85vh, 8px);\n      direction: ltr;\n    }\n\n    .anchorOverlap {\n      width: 100%;\n      min-height: 14px;\n      font-size: clamp(8px, 1.05vh, 10px);\n    }\n\n    .anchorOverlap > span {\n      white-space: normal;\n    }\n\n    .anchorItem:nth-child(1) .anchorOverlap > span { text-align: left; }\n    .anchorItem:nth-child(2) .anchorOverlap > span { text-align: center; }\n    .anchorItem:nth-child(3) .anchorOverlap > span { text-align: right; }\n\n    .hiddenValue {\n      display: none;\n    }\n\n    #sideLabelPane,\n    #languageTabs {\n      display: none !important;\n    }\n\n    #printButton {\n      position: absolute;\n      left: clamp(24px, 2vw, 38px);\n      bottom: clamp(20px, 2.2vh, 28px);\n      z-index: 10;\n      min-width: 118px;\n      border: 0.5px solid #231f20;\n      background: #231f20;\n      color: #ececec;\n      padding: 11px 22px 10px;\n      font-family: \"SimplerMono\", Arial, Helvetica, sans-serif;\n      font-size: clamp(12px, 0.85vw, 16px);\n      line-height: 1;\n      letter-spacing: 0.08em;\n      text-align: center;\n      cursor: pointer;\n      border-radius: 999px;\n    }\n\n    #printButton:hover,\n    #printButton:focus-visible {\n      background: transparent;\n      color: #231f20;\n      outline: none;\n    }\n\n    @media (min-width: 1600px) and (min-height: 850px) {\n      #questionsInner {\n        height: 100%;\n      }\n\n      .sliderScale {\n        width: min(480px, 100%);\n      }\n    }\n\n    @media (max-width: 1380px) {\n      #topBar {\n        grid-template-columns: 155px minmax(0, 1fr) 250px;\n        padding-inline: 28px;\n      }\n\n      #wordNavigation {\n        gap: clamp(8px, 1vw, 14px);\n      }\n\n      .navWord {\n        min-width: 38px;\n        font-size: 14px;\n      }\n\n      #mainArea {\n        grid-template-columns: minmax(0, 1.82fr) minmax(410px, 0.88fr);\n      }\n\n      #questionsInner {\n        min-height: 0;\n      }\n    }\n\n    @media (min-width: 1081px) and (max-height: 760px) {\n      #questionsPane {\n        padding-top: 9px;\n        padding-bottom: 9px;\n      }\n\n      #questionsInner {\n        gap: 2px;\n      }\n\n      .questionText {\n        font-size: 12px;\n        line-height: 1.04;\n        margin-bottom: 2px;\n      }\n\n      .sliderTrackWrap,\n      input[type=\"range\"] {\n        height: 15px;\n      }\n\n\n      .anchorRow {\n        margin-top: 0;\n      }\n\n      .anchorItem,\n      .anchorOverlap {\n        font-size: 7.5px;\n        line-height: 1;\n      }\n    }\n\n    @media (max-width: 1080px) {\n      html, body {\n        overflow: auto;\n      }\n\n      #topBar {\n        height: auto;\n        min-height: 104px;\n        grid-template-columns: 1fr auto;\n        gap: 14px 20px;\n        padding: 16px 24px;\n      }\n\n      #wordNavigation {\n        grid-column: 1 / -1;\n        grid-row: 2;\n        flex-wrap: wrap;\n        gap: 13px 24px;\n      }\n\n      #mainArea {\n        height: auto;\n        min-height: calc(100vh - 104px);\n        grid-template-columns: 1fr;\n        grid-template-rows: min(58vw, 56vh) auto;\n      }\n\n      #canvasPane {\n        border-right: 0;\n        border-bottom: 0.5px solid var(--line);\n      }\n\n      #questionsPane {\n        display: block;\n        padding: 42px 28px 60px;\n      }\n\n      #questionsInner {\n        height: auto;\n        min-height: 0;\n        display: block;\n      }\n\n      .questionBlock {\n        margin-bottom: 38px;\n      }\n    }\n\n    @media (max-width: 640px) {\n      #topBar {\n        grid-template-columns: 1fr;\n        justify-items: center;\n      }\n\n      #foundStatus,\n      #projectTitle {\n        justify-self: center;\n      }\n\n      #wordNavigation {\n        display: none;\n      }\n\n      #mainArea {\n        grid-template-rows: 44vh auto;\n      }\n\n      #questionsPane {\n        padding: 34px 20px 52px;\n      }\n\n      .questionText {\n        font-size: 16px;\n      }\n\n      .anchorItem {\n        font-size: 9px;\n      }\n    }\n\n    #sharedFooter {\n      height: var(--footer-h);\n      flex: 0 0 var(--footer-h);\n      border-top: 0.5px solid rgba(0,0,0,.2);\n      background: var(--bg);\n      display: flex;\n      align-items: center;\n      justify-content: space-between;\n      padding: 0 3.7vw;\n      direction: ltr;\n      font-family: \"AlfaBravoMedium\", \"SimplerMono\", monospace;\n      position: relative;\n    }\n\n    #footerActions {\n      position: absolute;\n      right: calc(3.7vw + 158px);\n      top: 50%;\n      transform: translateY(-50%);\n      display: flex;\n      align-items: center;\n      direction: ltr;\n    }\n\n    .footerAction {\n      width: 140px;\n      height: 28px;\n      border: 0.5px solid rgba(17,17,17,.62);\n      border-radius: 999px;\n      background: transparent;\n      padding: 0;\n      cursor: pointer;\n      touch-action: manipulation;\n      font-family: \"AlfaBravoMedium\", \"SimplerMono\", monospace;\n      font-size: var(--type-ui);\n      line-height: 1;\n    }\n\n    .footerAction > span {\n      align-self: center;\n      justify-self: center;\n      text-align: center;\n    }\n\n    #footerEyes { display: flex; align-items: center; gap: 14px; }\n    .footerEye {\n      width: 25px;\n      height: 25px;\n      border-radius: 50%;\n      padding: 0;\n      cursor: pointer;\n      background: transparent;\n      border: 0;\n      position: relative;\n      touch-action: manipulation;\n    }\n    .footerEye::after {\n      content: \"\";\n      position: absolute;\n      inset: 4px;\n      border-radius: 50%;\n      background: var(--eye-color);\n      opacity: 1;\n    }\n    .footerEye.isActive {\n      border: 0.5px dashed #111;\n    }\n    #footerCurrentWord {\n      width: 142px;\n      min-width: 142px;\n      font-size: clamp(13px, 1.7vh, 18px);\n      text-align: right;\n    }\n\n    #printPage {\n      display: none;\n    }\n\n    #printTicketImage {\n      display: block;\n    }\n\n    @media print {\n      @page {\n        size: 148mm 105mm;\n        margin: 0;\n      }\n\n      html, body {\n        width: 148mm;\n        height: 105mm;\n        margin: 0 !important;\n        padding: 0 !important;\n        background: #ffffff !important;\n        overflow: hidden !important;\n      }\n\n      #topBar,\n      #mainArea,\n      #sharedFooter {\n        display: none !important;\n      }\n\n    #sharedFooter {\n      height: var(--footer-h);\n      flex: 0 0 var(--footer-h);\n      border-top: 0.5px solid rgba(0,0,0,.2);\n      background: var(--bg);\n      display: flex;\n      align-items: center;\n      justify-content: space-between;\n      padding: 0 3.7vw;\n      direction: ltr;\n      font-family: \"AlfaBravoMedium\", \"SimplerMono\", monospace;\n    }\n\n    #footerEyes { display: flex; align-items: center; gap: 14px; }\n    .footerEye {\n      width: 25px;\n      height: 25px;\n      border-radius: 50%;\n      padding: 0;\n      cursor: pointer;\n      background: transparent;\n      border: 0;\n      position: relative;\n      touch-action: manipulation;\n    }\n    .footerEye::after {\n      content: \"\";\n      position: absolute;\n      inset: 4px;\n      border-radius: 50%;\n      background: var(--eye-color);\n      opacity: 1;\n    }\n    .footerEye.isActive {\n      border: 0.5px dashed #111;\n    }\n    #footerCurrentWord {\n      width: 142px;\n      min-width: 142px;\n      font-size: clamp(13px, 1.7vh, 18px);\n      text-align: right;\n    }\n\n    #printPage {\n        display: flex !important;\n        width: 148mm;\n        height: 105mm;\n        align-items: center;\n        justify-content: center;\n        background: #ffffff;\n        overflow: hidden;\n      }\n\n      #printTicketImage {\n        width: 148mm;\n        height: 105mm;\n        max-width: none;\n        max-height: none;\n        object-fit: fill;\n        image-rendering: auto;\n        display: block;\n        -webkit-print-color-adjust: exact;\n        print-color-adjust: exact;\n      }\n    }\n  </style>\n</head>\n<body>\n  <header id=\"topBar\">\n    <div id=\"foundStatus\" aria-label=\"0 \u05DE\u05EA\u05D5\u05DA 5 \u05E0\u05DE\u05E6\u05D0\u05D5 / \u062A\u0645 \u0627\u0644\u0639\u062B\u0648\u0631 \u0639\u0644\u0649 0 \u0645\u0646 5\">\n      <div id=\"foundOverlap\" class=\"overlapText\" aria-hidden=\"true\">\n        <span class=\"hebrewLayer\" lang=\"he\">\u05E0\u05DE\u05E6\u05D0\u05D5</span>\n        <span class=\"arabicLayer\" lang=\"ar\">\u062A\u0645 \u0627\u0644\u0639\u062B\u0648\u0631</span>\n      </div>\n      <div id=\"foundNumber\" class=\"overlapText\" aria-hidden=\"true\">\n        <span class=\"hebrewLayer\" lang=\"he\">5/0</span>\n        <span class=\"arabicLayer\" lang=\"ar\">5/0</span>\n      </div>\n    </div>\n\n    <nav id=\"wordNavigation\" aria-label=\"\u05DE\u05D9\u05DC\u05D5\u05EA \u05D4\u05E4\u05E8\u05D5\u05D9\u05E7\u05D8 / \u0643\u0644\u0645\u0627\u062A \u0627\u0644\u0645\u0634\u0631\u0648\u0639\">\n      <div class=\"navWord overlapText\"><span class=\"hebrewLayer\" lang=\"he\">\u05D2\u05D1\u05D5\u05DC</span><span class=\"arabicLayer\" lang=\"ar\">\u062D\u062F\u0648\u062F</span></div>\n      <div class=\"navWord overlapText\"><span class=\"hebrewLayer\" lang=\"he\">\u05D1\u05D9\u05EA</span><span class=\"arabicLayer\" lang=\"ar\">\u0628\u064A\u062A</span></div>\n      <div class=\"navWord overlapText\"><span class=\"hebrewLayer\" lang=\"he\">\u05D4\u05E9\u05EA\u05E7\u05E4\u05D5\u05EA</span><span class=\"arabicLayer\" lang=\"ar\">\u0627\u0646\u0639\u0643\u0627\u0633</span></div>\n      <div class=\"navWord overlapText\"><span class=\"hebrewLayer\" lang=\"he\">\u05D6\u05D9\u05DB\u05E8\u05D5\u05DF</span><span class=\"arabicLayer\" lang=\"ar\">\u0630\u0627\u0643\u0631\u0629</span></div>\n      <div class=\"navWord overlapText\"><span class=\"hebrewLayer\" lang=\"he\">\u05E9\u05E4\u05D4</span><span class=\"arabicLayer\" lang=\"ar\">\u0644\u063A\u0629</span></div>\n    </nav>\n\n    <div id=\"projectTitle\" class=\"overlapText\" aria-label=\"\u05E6\u05D9\u05E4\u05D5\u05E8 \u05DE\u05E2\u05D5\u05E4\u05E4\u05EA / \u0639\u0635\u0641\u0648\u0631 \u0637\u0627\u064A\u0631\">\n      <span id=\"titleHe\" class=\"hebrewLayer\" lang=\"he\" title=\"\u05DB\u05E8\u05D8\u05D9\u05E1 \u05D1\u05E2\u05D1\u05E8\u05D9\u05EA\">\u05E6\u05D9\u05E4\u05D5\u05E8 \u05DE\u05E2\u05D5\u05E4\u05E4\u05EA</span>\n      <span id=\"titleAr\" class=\"arabicLayer\" lang=\"ar\" title=\"\u0627\u0644\u0628\u0637\u0627\u0642\u0629 \u0628\u0627\u0644\u0639\u0631\u0628\u064A\u0629\">\u0639\u0635\u0641\u0648\u0631 \u0637\u0627\u064A\u0631</span>\n    </div>\n  </header>\n\n  <main id=\"mainArea\">\n    <section id=\"canvasPane\">\n      <div id=\"canvasArea\"></div>\n      <button id=\"printButton\" type=\"button\" aria-label=\"Print A6 ticket\">PRINT</button>\n    </section>\n\n    <section id=\"questionsPane\">\n      <div id=\"questionsInner\"></div>\n    </section>\n\n    <aside id=\"sideLabelPane\">\n      <div class=\"sideWordWrap\">\n        <div class=\"sideWordPrimary\">\u0627\u0646\u0639\u0643\u0627\u0633</div>\n        <div class=\"sideWordSecondary\">\u05D4\u05E9\u05EA\u05E7\u05E4\u05D5\u05EA</div>\n      </div>\n    </aside>\n  </main>\n\n\n  <footer id=\"sharedFooter\">\n    <div id=\"footerEyes\" aria-label=\"Select draggable color lens\">\n      <button id=\"footerArabicEye\" class=\"footerEye\" style=\"--eye-color:#ff3535\" aria-label=\"Select red lens\"></button>\n      <button id=\"footerHebrewEye\" class=\"footerEye\" style=\"--eye-color:#2ef5ff\" aria-label=\"Select cyan lens\"></button>\n    </div>\n    <div id=\"footerActions\" aria-label=\"Navigation actions\">\n      <button id=\"footerGridButton\" class=\"footerAction overlapText\" type=\"button\" aria-label=\"Return to grid\">\n        <span class=\"hebrewLayer\" lang=\"he\">\u05D4\u05D2\u05E8\u05D9\u05D3</span>\n        <span class=\"arabicLayer\" lang=\"ar\">\u0627\u0644\u0634\u0628\u0643\u0629</span>\n      </button>\n    </div>\n    <div id=\"footerCurrentWord\" class=\"overlapText\" aria-label=\"Current word\">\n      <span class=\"hebrewLayer\" lang=\"he\">\u05D4\u05E9\u05EA\u05E7\u05E4\u05D5\u05EA</span>\n      <span class=\"arabicLayer\" lang=\"ar\">\u0627\u0646\u0639\u0643\u0627\u0633</span>\n    </div>\n  </footer>\n\n  <section id=\"printPage\">\n    <img id=\"printTicketImage\" alt=\"Printed reflection ticket\" />\n  </section>\n\n<script>\nlet answers = [1, 2, 2, 2, 2];\nlet patternSeed = 24111;\nlet userSeed = 0;\nlet cnv;\nlet ticketG;\nlet ticketDirty = true;\nlet currentLang = \"he\";\nlet ticketLang = \"he\";\nlet ticketFont = null;\nlet fontReady = false;\n\nconst RED = \"#ff1d25\";\nconst BLUE = \"#00f0ff\";\nconst BLACK = \"#111111\";\nconst GRAY_BG = \"#ececec\";\nconst LIGHT_BLUE = \"#9bbbf8\";\nconst ARABIC_TEXT_COLOR = \"#ff3535\";\nconst HEBREW_TEXT_COLOR = \"#2ef5ff\";\nconst ANSWER_BLOCK_COLOR = \"#231f20\";\n\n// True A6 landscape dimensions.\n// 148 \u00D7 105 mm rendered at 300 DPI = 1748 \u00D7 1240 pixels.\nconst A6_WIDTH_MM = 148;\nconst A6_HEIGHT_MM = 105;\nconst EXPORT_DPI = 300;\nconst PRINT_W = Math.round((A6_WIDTH_MM / 25.4) * EXPORT_DPI);\nconst PRINT_H = Math.round((A6_HEIGHT_MM / 25.4) * EXPORT_DPI);\nconst PRINT_RATIO = PRINT_H / PRINT_W;\n\n// Five square pattern modules stacked vertically in each strip.\nconst PATTERN_BLOCK_COUNT = 5;\nconst PATTERN_STRIP_COUNT = 2;\n\nconst CONTENT = {\n  he: {\n    foundStatusText: \"\u05E0\u05DE\u05E6\u05D0\u05D5\",\n    questions: [\n      \"1. \u05E2\u05D3 \u05DB\u05DE\u05D4 \u05D4\u05DE\u05E9\u05DE\u05E2\u05D5\u05EA \u05E9\u05DC \u05DE\u05D4 \u05E9\u05D0\u05EA/\u05D4 \u05E8\u05D5\u05E6\u05D4 \u05DC\u05D5\u05DE\u05E8 \u05DE\u05E9\u05EA\u05E0\u05D4 \u05D1\u05DE\u05E2\u05D1\u05E8 \u05D1\u05D9\u05DF \u05E9\u05E4\u05D4 \u05D0\u05D7\u05EA \u05DC\u05D0\u05D7\u05E8\u05EA?\",\n      \"2. \u05E2\u05D3 \u05DB\u05DE\u05D4 \u05D0\u05EA/\u05D4 \u05DE\u05E8\u05D2\u05D9\u05E9/\u05D4 \u05E9\u05D2\u05E8\u05E1\u05D4 \u05D0\u05D7\u05E8\u05EA \u05E9\u05DC\u05DA \u05DE\u05D5\u05E4\u05D9\u05E2\u05D4 \u05D1\u05DB\u05DC \u05E9\u05E4\u05D4?\",\n      \"3. \u05E2\u05D3 \u05DB\u05DE\u05D4 \u05D0\u05EA/\u05D4 \u05DE\u05E8\u05D2\u05D9\u05E9/\u05D4 \u05E9\u05D0\u05D7\u05E8\u05D9\u05DD \u05DE\u05D1\u05D9\u05E0\u05D9\u05DD \u05D0\u05D5\u05EA\u05DA \u05D0\u05D7\u05E8\u05EA \u05DB\u05E9\u05D0\u05EA/\u05D4 \u05DE\u05D3\u05D1\u05E8/\u05EA \u05D1\u05E9\u05E4\u05D4 \u05E9\u05D5\u05E0\u05D4?\",\n      \"4. \u05E2\u05D3 \u05DB\u05DE\u05D4 \u05D4\u05E9\u05E4\u05D4 \u05E9\u05D1\u05D4 \u05D0\u05EA/\u05D4 \u05DE\u05D3\u05D1\u05E8/\u05EA \u05DE\u05E9\u05E4\u05D9\u05E2\u05D4 \u05E2\u05DC \u05EA\u05D7\u05D5\u05E9\u05EA \u05D4\u05E9\u05D9\u05D9\u05DB\u05D5\u05EA \u05E9\u05DC\u05DA?\",\n      \"5. \u05E2\u05D3 \u05DB\u05DE\u05D4 \u05D9\u05E9 \u05D1\u05DA \u05D3\u05D1\u05E8\u05D9\u05DD \u05E9\u05D0\u05E3 \u05E9\u05E4\u05D4 \u05D0\u05D9\u05E0\u05D4 \u05DE\u05E6\u05DC\u05D9\u05D7\u05D4 \u05DC\u05D1\u05D8\u05D0 \u05D1\u05DE\u05DC\u05D5\u05D0\u05DD?\"\n    ],\n    scaleAnchors: [\n      { value: \"1\", text: \"\u05DB\u05DE\u05E2\u05D8 \u05D1\u05DB\u05DC\u05DC \u05DC\u05D0\" },\n      { value: \"3\", text: \"\u05DC\u05E4\u05E2\u05DE\u05D9\u05DD\" },\n      { value: \"5\", text: \"\u05D1\u05DE\u05D9\u05D3\u05D4 \u05E8\u05D1\u05D4 \u05DE\u05D0\u05D5\u05D3\" }\n    ],\n    ticketTitle: \"\u05D1\u05D9\u05DF \u05D4\u05E9\u05E4\u05D5\u05EA\",\n    ticketVersion: \"\u05E4\u05E8\u05D5\u05D9\u05E7\u05D8 \u05D2\u05DE\u05E8 2026\",\n    reflectionLabel: \"\u05E7\u05E8\u05D9\u05D0\u05D4 \u05D0\u05D9\u05E9\u05D9\u05EA\",\n    noteLabel: \"\u05E0\u05D1\u05E0\u05D4 \u05DE\u05D7\u05DE\u05E9 \u05D4\u05EA\u05E9\u05D5\u05D1\u05D5\u05EA \u05E9\u05DC\u05DA\",\n    footerNote: \"\u05D4\u05EA\u05D5\u05E6\u05D0\u05D4 \u05DE\u05EA\u05D0\u05E8\u05EA \u05D0\u05EA \u05D0\u05D5\u05E4\u05DF \u05D4\u05EA\u05D2\u05D5\u05D1\u05D4 \u05E9\u05DC\u05DA \u05D1\u05E8\u05D2\u05E2 \u05D6\u05D4; \u05D4\u05D9\u05D0 \u05D0\u05D9\u05E0\u05D4 \u05E7\u05D1\u05D9\u05E2\u05D4 \u05E7\u05D1\u05D5\u05E2\u05D4.\",\n    barcodeLabel: \"\u05D4\u05E9\u05EA\u05E7\u05E4\u05D5\u05EA\",\n    labels: [\n      \"\u05DE\u05D4 \u05E2\u05D5\u05D1\u05E8 \u05D1\u05D9\u05DF \u05D4\u05E9\u05E4\u05D5\u05EA\",\n      \"\u05D0\u05D9\u05DA \u05D0\u05EA/\u05D4 \u05DE\u05E9\u05EA\u05E0\u05D4\",\n      \"\u05D0\u05D9\u05DA \u05D0\u05D7\u05E8\u05D9\u05DD \u05DE\u05D1\u05D9\u05E0\u05D9\u05DD \u05D0\u05D5\u05EA\u05DA\",\n      \"\u05D0\u05D9\u05DA \u05D4\u05E9\u05E4\u05D4 \u05DE\u05E9\u05E4\u05D9\u05E2\u05D4 \u05E2\u05DC \u05E9\u05D9\u05D9\u05DB\u05D5\u05EA\",\n      \"\u05DE\u05D4 \u05E7\u05E9\u05D4 \u05DC\u05D1\u05D8\u05D0\"\n    ],\n    shortLabels: [\n      \"\u05DE\u05E9\u05DE\u05E2\u05D5\u05EA\",\n      \"\u05E9\u05D9\u05E0\u05D5\u05D9\",\n      \"\u05D4\u05D1\u05E0\u05D4\",\n      \"\u05E9\u05D9\u05D9\u05DB\u05D5\u05EA\",\n      \"\u05D1\u05D9\u05D8\u05D5\u05D9\"\n    ],\n    statements: [\n      [\n        \"\u05D4\u05DE\u05D9\u05DC\u05D9\u05DD \u05DB\u05DE\u05E2\u05D8 \u05E0\u05E9\u05D0\u05E8\u05D5\u05EA \u05E9\u05DC\u05DE\u05D5\u05EA.\",\n        \"\u05E8\u05E7 \u05DE\u05E2\u05D8 \u05DE\u05E9\u05EA\u05E0\u05D4 \u05D1\u05D3\u05E8\u05DA.\",\n        \"\u05D7\u05DC\u05E7 \u05DE\u05D4\u05DB\u05D5\u05D5\u05E0\u05D4 \u05DE\u05EA\u05D7\u05DC\u05E3.\",\n        \"\u05D4\u05DE\u05E9\u05DE\u05E2\u05D5\u05EA \u05DE\u05D2\u05D9\u05E2\u05D4 \u05D7\u05DC\u05E7\u05D9\u05EA.\",\n        \"\u05D4\u05E8\u05D1\u05D4 \u05E0\u05E9\u05D0\u05E8 \u05DE\u05D0\u05D7\u05D5\u05E8.\"\n      ],\n      [\n        \"\u05D0\u05D5\u05EA\u05D5 \u05E7\u05D5\u05DC \u05DE\u05DC\u05D5\u05D5\u05D4 \u05D0\u05D5\u05EA\u05DA.\",\n        \"\u05D4\u05D8\u05D5\u05DF \u05DE\u05E9\u05EA\u05E0\u05D4 \u05DE\u05E2\u05D8.\",\n        \"\u05E6\u05D3 \u05D0\u05D7\u05E8 \u05D1\u05DA \u05DE\u05D5\u05E4\u05D9\u05E2.\",\n        \"\u05DB\u05DC \u05E9\u05E4\u05D4 \u05DE\u05E9\u05E0\u05D4 \u05D0\u05EA \u05D4\u05E0\u05D5\u05DB\u05D7\u05D5\u05EA \u05E9\u05DC\u05DA.\",\n        \"\u05D1\u05DB\u05DC \u05E9\u05E4\u05D4 \u05DE\u05D5\u05E4\u05D9\u05E2\u05D4 \u05D2\u05E8\u05E1\u05D4 \u05D0\u05D7\u05E8\u05EA \u05E9\u05DC\u05DA.\"\n      ],\n      [\n        \"\u05E8\u05D5\u05D1 \u05D4\u05D0\u05E0\u05E9\u05D9\u05DD \u05E9\u05D5\u05DE\u05E2\u05D9\u05DD \u05D0\u05EA \u05DB\u05D5\u05D5\u05E0\u05EA\u05DA.\",\n        \"\u05DC\u05E4\u05E2\u05DE\u05D9\u05DD \u05DE\u05E9\u05D4\u05D5 \u05E0\u05E7\u05E8\u05D0 \u05D0\u05D7\u05E8\u05EA.\",\n        \"\u05D7\u05DC\u05E7 \u05DE\u05DE\u05DA \u05DE\u05EA\u05E4\u05E1\u05E4\u05E1.\",\n        \"\u05D4\u05E0\u05D7\u05D5\u05EA \u05E7\u05D5\u05D3\u05DE\u05D5\u05EA \u05E0\u05DB\u05E0\u05E1\u05D5\u05EA \u05DC\u05E9\u05D9\u05D7\u05D4.\",\n        \"\u05D0\u05EA/\u05D4 \u05E0\u05D6\u05D4\u05E8/\u05EA \u05DC\u05E4\u05E0\u05D9 \u05DB\u05DC \u05DE\u05E9\u05E4\u05D8.\"\n      ],\n      [\n        \"\u05D4\u05E9\u05D9\u05D9\u05DB\u05D5\u05EA \u05E0\u05E9\u05D0\u05E8\u05EA \u05D9\u05E6\u05D9\u05D1\u05D4.\",\n        \"\u05D4\u05E0\u05D5\u05D7\u05D5\u05EA \u05DE\u05E9\u05EA\u05E0\u05D4 \u05DE\u05E2\u05D8.\",\n        \"\u05D4\u05DE\u05E7\u05D5\u05DD \u05DE\u05E9\u05E0\u05D4 \u05D0\u05EA \u05D4\u05EA\u05D7\u05D5\u05E9\u05D4.\",\n        \"\u05D4\u05E9\u05E4\u05D4 \u05E4\u05D5\u05EA\u05D7\u05EA \u05D0\u05D5 \u05E1\u05D5\u05D2\u05E8\u05EA \u05DE\u05E8\u05D7\u05D1.\",\n        \"\u05D4\u05E9\u05D9\u05D9\u05DB\u05D5\u05EA \u05EA\u05DC\u05D5\u05D9\u05D4 \u05D1\u05D0\u05D5\u05E4\u05DF \u05E9\u05D1\u05D5 \u05D0\u05EA/\u05D4 \u05E0\u05E9\u05DE\u05E2/\u05EA.\"\n      ],\n      [\n        \"\u05E8\u05D5\u05D1 \u05D4\u05D3\u05D1\u05E8\u05D9\u05DD \u05DE\u05D5\u05E6\u05D0\u05D9\u05DD \u05DE\u05D9\u05DC\u05D9\u05DD.\",\n        \"\u05DE\u05E2\u05D8 \u05E0\u05E9\u05D0\u05E8 \u05D1\u05E4\u05E0\u05D9\u05DD.\",\n        \"\u05D9\u05E9 \u05D3\u05D1\u05E8\u05D9\u05DD \u05D1\u05DC\u05D9 \u05E0\u05D9\u05E1\u05D5\u05D7 \u05E9\u05DC\u05DD.\",\n        \"\u05D4\u05E8\u05D1\u05D4 \u05E0\u05E9\u05D0\u05E8 \u05E9\u05E7\u05D8.\",\n        \"\u05D4\u05D3\u05D1\u05E8\u05D9\u05DD \u05D4\u05DB\u05D1\u05D3\u05D9\u05DD \u05D1\u05D9\u05D5\u05EA\u05E8 \u05E0\u05E9\u05D0\u05E8\u05D9\u05DD \u05D1\u05DC\u05D9 \u05E9\u05DD.\"\n      ]\n    ],\n    reflectionSystem: {\n      opening: {\n        low: [\n          \"\u05D0\u05EA/\u05D4 \u05E2\u05D5\u05D1\u05E8/\u05EA \u05D1\u05D9\u05DF \u05D4\u05E9\u05E4\u05D5\u05EA \u05D1\u05DC\u05D9 \u05DC\u05D0\u05D1\u05D3 \u05D0\u05EA \u05D4\u05DB\u05D9\u05D5\u05D5\u05DF \u05E9\u05DC\u05DA. \u05D4\u05E6\u05DC\u05D9\u05DC \u05DE\u05E9\u05EA\u05E0\u05D4, \u05D0\u05D1\u05DC \u05DE\u05D4 \u05E9\u05E8\u05E6\u05D9\u05EA \u05DC\u05D5\u05DE\u05E8 \u05E0\u05E9\u05D0\u05E8 \u05E7\u05E8\u05D5\u05D1 \u05DC\u05DE\u05E7\u05D5\u05E8.\",\n          \"\u05D4\u05DE\u05E2\u05D1\u05E8 \u05D1\u05D9\u05DF \u05D4\u05E9\u05E4\u05D5\u05EA \u05D8\u05D1\u05E2\u05D9 \u05DC\u05DA \u05D9\u05D7\u05E1\u05D9\u05EA. \u05D4\u05DE\u05D9\u05DC\u05D9\u05DD \u05DE\u05EA\u05D7\u05DC\u05E4\u05D5\u05EA, \u05D0\u05DA \u05D4\u05E7\u05D5\u05DC \u05E9\u05DE\u05D0\u05D7\u05D5\u05E8\u05D9\u05D4\u05DF \u05E0\u05E9\u05D0\u05E8 \u05DE\u05D5\u05DB\u05E8 \u05D5\u05D1\u05E8\u05D5\u05E8.\"\n        ],\n        mid: [\n          \"\u05D1\u05DB\u05DC \u05E9\u05E4\u05D4 \u05D4\u05E7\u05D5\u05DC \u05E9\u05DC\u05DA \u05DE\u05E7\u05D1\u05DC \u05D2\u05D5\u05D5\u05DF \u05DE\u05E2\u05D8 \u05D0\u05D7\u05E8. \u05D0\u05EA/\u05D4 \u05DE\u05EA\u05D0\u05D9\u05DD/\u05D4 \u05D0\u05EA \u05D4\u05DE\u05D9\u05DC\u05D9\u05DD \u05DC\u05DE\u05E7\u05D5\u05DD \u05D5\u05DC\u05D0\u05E0\u05E9\u05D9\u05DD, \u05D0\u05DA \u05E9\u05D5\u05DE\u05E8/\u05EA \u05E2\u05DC \u05D7\u05D5\u05D8 \u05E9\u05DE\u05D7\u05D1\u05E8 \u05D1\u05D9\u05DF \u05D4\u05D2\u05E8\u05E1\u05D0\u05D5\u05EA.\",\n          \"\u05D4\u05DE\u05E2\u05D1\u05E8 \u05D1\u05D9\u05DF \u05D4\u05E9\u05E4\u05D5\u05EA \u05DE\u05E9\u05E0\u05D4 \u05D0\u05E6\u05DC\u05DA \u05D0\u05EA \u05D4\u05E7\u05E6\u05D1 \u05D5\u05D0\u05EA \u05DE\u05D9\u05D3\u05EA \u05D4\u05D7\u05E9\u05D9\u05E4\u05D4. \u05DC\u05D0 \u05D4\u05DB\u05D5\u05DC \u05DE\u05E9\u05EA\u05E0\u05D4, \u05D0\u05D1\u05DC \u05D1\u05DB\u05DC \u05DE\u05E8\u05D7\u05D1 \u05DE\u05D5\u05E4\u05D9\u05E2 \u05E6\u05D3 \u05DE\u05E2\u05D8 \u05D0\u05D7\u05E8 \u05E9\u05DC\u05DA.\"\n        ],\n        high: [\n          \"\u05D4\u05DE\u05E2\u05D1\u05E8 \u05D1\u05D9\u05DF \u05E9\u05E4\u05D5\u05EA \u05D3\u05D5\u05E8\u05E9 \u05DE\u05DE\u05DA \u05D1\u05D7\u05D9\u05E8\u05D4 \u05DE\u05D7\u05D5\u05D3\u05E9\u05EA \u05D1\u05DB\u05DC \u05E4\u05E2\u05DD. \u05D7\u05DC\u05E7\u05D9\u05DD \u05DE\u05E1\u05D5\u05D9\u05DE\u05D9\u05DD \u05E0\u05E2\u05E9\u05D9\u05DD \u05D1\u05E8\u05D5\u05E8\u05D9\u05DD \u05D9\u05D5\u05EA\u05E8, \u05D5\u05D0\u05D7\u05E8\u05D9\u05DD \u05E0\u05E1\u05D5\u05D2\u05D9\u05DD \u05DB\u05D3\u05D9 \u05E9\u05EA\u05D5\u05DB\u05DC/\u05D9 \u05DC\u05D4\u05D9\u05E9\u05DE\u05E2 \u05D5\u05DC\u05D4\u05D9\u05D5\u05EA \u05DE\u05D5\u05D1\u05DF/\u05EA.\",\n          \"\u05D1\u05DB\u05DC \u05E9\u05E4\u05D4 \u05D0\u05EA/\u05D4 \u05D1\u05D5\u05E0\u05D4 \u05DE\u05D7\u05D3\u05E9 \u05D0\u05EA \u05D4\u05D3\u05E8\u05DA \u05E9\u05D1\u05D4 \u05EA\u05D5\u05E4\u05E1\u05D9\u05DD \u05D0\u05D5\u05EA\u05DA. \u05D4\u05DE\u05D0\u05DE\u05E5 \u05D0\u05D9\u05E0\u05D5 \u05E8\u05E7 \u05DC\u05DE\u05E6\u05D5\u05D0 \u05DE\u05D9\u05DC\u05D9\u05DD, \u05D0\u05DC\u05D0 \u05D2\u05DD \u05DC\u05D1\u05D7\u05D5\u05E8 \u05DE\u05D4 \u05D9\u05D5\u05E4\u05D9\u05E2 \u05D5\u05DE\u05D4 \u05D9\u05D9\u05E9\u05D0\u05E8 \u05D1\u05E8\u05E7\u05E2.\"\n        ]\n      },\n      dimensions: [\n        {\n          low: [\"\u05E8\u05D5\u05D1 \u05D4\u05DE\u05E9\u05DE\u05E2\u05D5\u05EA \u05E2\u05D5\u05D1\u05E8\u05EA \u05D0\u05D9\u05EA\u05DA, \u05D5\u05DC\u05DB\u05DF \u05D0\u05D9\u05E0\u05DA \u05E0\u05D3\u05E8\u05E9/\u05EA \u05DC\u05D5\u05D5\u05EA\u05E8 \u05E2\u05DC \u05D4\u05E8\u05D1\u05D4 \u05D1\u05D3\u05E8\u05DA.\"],\n          mid: [\"\u05D4\u05E2\u05D9\u05E7\u05E8 \u05DE\u05D2\u05D9\u05E2, \u05D0\u05DA \u05DB\u05DE\u05D4 \u05D2\u05D5\u05D5\u05E0\u05D9\u05DD \u05D3\u05E7\u05D9\u05DD \u05E0\u05E9\u05D0\u05E8\u05D9\u05DD \u05DE\u05D0\u05D7\u05D5\u05E8 \u05D0\u05D5 \u05DE\u05E7\u05D1\u05DC\u05D9\u05DD \u05E6\u05D5\u05E8\u05D4 \u05D0\u05D7\u05E8\u05EA.\"],\n          high: [\"\u05DE\u05D4 \u05E9\u05DE\u05D2\u05D9\u05E2 \u05DC\u05D0\u05D7\u05E8\u05D9\u05DD \u05D4\u05D5\u05D0 \u05E8\u05E7 \u05D7\u05DC\u05E7 \u05DE\u05DE\u05D4 \u05E9\u05D4\u05EA\u05DB\u05D5\u05D5\u05E0\u05EA \u05DC\u05E9\u05D0\u05EA \u05D0\u05D9\u05EA\u05DA.\"]\n        },\n        {\n          low: [\"\u05D4\u05E0\u05D5\u05DB\u05D7\u05D5\u05EA \u05E9\u05DC\u05DA \u05E0\u05E9\u05D0\u05E8\u05EA \u05D3\u05D5\u05DE\u05D4 \u05D2\u05DD \u05DB\u05E9\u05D4\u05E9\u05E4\u05D4 \u05DE\u05EA\u05D7\u05DC\u05E4\u05EA.\"],\n          mid: [\"\u05DB\u05DC \u05E9\u05E4\u05D4 \u05DE\u05D6\u05DE\u05D9\u05E0\u05D4 \u05E6\u05D3 \u05DE\u05E2\u05D8 \u05D0\u05D7\u05E8 \u05E9\u05DC\u05DA, \u05D1\u05DC\u05D9 \u05DC\u05DE\u05D7\u05D5\u05E7 \u05D0\u05EA \u05D4\u05E6\u05D3\u05D3\u05D9\u05DD \u05D4\u05D0\u05D7\u05E8\u05D9\u05DD.\"],\n          high: [\"\u05DB\u05DC \u05E9\u05E4\u05D4 \u05DE\u05E6\u05D9\u05D1\u05D4 \u05D0\u05D5\u05EA\u05DA \u05D1\u05DE\u05E7\u05D5\u05DD \u05D0\u05D7\u05E8 \u05D5\u05DE\u05D1\u05DC\u05D9\u05D8\u05D4 \u05D2\u05E8\u05E1\u05D4 \u05E9\u05D5\u05E0\u05D4 \u05E9\u05DC\u05DA.\"]\n        },\n        {\n          low: [\"\u05D1\u05E8\u05D5\u05D1 \u05D4\u05DE\u05E7\u05E8\u05D9\u05DD \u05D4\u05DB\u05D5\u05D5\u05E0\u05D4 \u05E9\u05DC\u05DA \u05E0\u05E7\u05E8\u05D0\u05EA \u05DB\u05E4\u05D9 \u05E9\u05E8\u05E6\u05D9\u05EA.\"],\n          mid: [\"\u05DC\u05E4\u05E2\u05DE\u05D9\u05DD \u05D0\u05D7\u05E8\u05D9\u05DD \u05E4\u05D5\u05D2\u05E9\u05D9\u05DD \u05E8\u05E7 \u05E9\u05DB\u05D1\u05D4 \u05D0\u05D7\u05EA, \u05D5\u05D0\u05EA/\u05D4 \u05DE\u05E9\u05DC\u05D9\u05DD/\u05D4 \u05D0\u05EA \u05D4\u05D7\u05E1\u05E8 \u05EA\u05D5\u05DA \u05DB\u05D3\u05D9.\"],\n          high: [\"\u05D4\u05DE\u05D1\u05D8 \u05E9\u05DC \u05D0\u05D7\u05E8\u05D9\u05DD \u05E0\u05DB\u05E0\u05E1 \u05D1\u05D9\u05DF \u05D4\u05DE\u05D9\u05DC\u05D9\u05DD \u05D5\u05DE\u05E9\u05E0\u05D4 \u05D0\u05EA \u05D4\u05D0\u05D5\u05E4\u05DF \u05E9\u05D1\u05D5 \u05E9\u05D5\u05DE\u05E2\u05D9\u05DD \u05D0\u05D5\u05EA\u05DA.\"]\n        },\n        {\n          low: [\"\u05EA\u05D7\u05D5\u05E9\u05EA \u05D4\u05DE\u05E7\u05D5\u05DD \u05E9\u05DC\u05DA \u05D0\u05D9\u05E0\u05D4 \u05EA\u05DC\u05D5\u05D9\u05D4 \u05DE\u05D0\u05D5\u05D3 \u05D1\u05E9\u05E4\u05D4 \u05E9\u05D1\u05D4 \u05D3\u05D9\u05D1\u05E8\u05EA.\"],\n          mid: [\"\u05D4\u05E0\u05D5\u05D7\u05D5\u05EA \u05D5\u05D4\u05E9\u05D9\u05D9\u05DB\u05D5\u05EA \u05DE\u05E9\u05EA\u05E0\u05D5\u05EA \u05DC\u05E4\u05D9 \u05D4\u05E1\u05D1\u05D9\u05D1\u05D4 \u05D5\u05DC\u05E4\u05D9 \u05DE\u05D9 \u05E9\u05E0\u05DE\u05E6\u05D0 \u05DE\u05D5\u05DC\u05DA.\"],\n          high: [\"\u05D4\u05E9\u05E4\u05D4 \u05DE\u05E9\u05E4\u05D9\u05E2\u05D4 \u05E2\u05DC \u05D4\u05DE\u05E7\u05D5\u05DD \u05E9\u05D1\u05D5 \u05D0\u05EA/\u05D4 \u05DE\u05E8\u05E9\u05D4 \u05DC\u05E2\u05E6\u05DE\u05DA \u05DC\u05D4\u05D9\u05E4\u05EA\u05D7 \u05D5\u05DC\u05D4\u05E8\u05D2\u05D9\u05E9 \u05D7\u05DC\u05E7.\"]\n        },\n        {\n          low: [\"\u05E8\u05D5\u05D1 \u05D4\u05D3\u05D1\u05E8\u05D9\u05DD \u05D4\u05D7\u05E9\u05D5\u05D1\u05D9\u05DD \u05DE\u05E6\u05DC\u05D9\u05D7\u05D9\u05DD \u05DC\u05E7\u05D1\u05DC \u05DE\u05D9\u05DC\u05D9\u05DD.\"],\n          mid: [\"\u05D9\u05E9 \u05D7\u05D5\u05D5\u05D9\u05D5\u05EA \u05E9\u05DE\u05D2\u05D9\u05E2\u05D5\u05EA \u05E8\u05E7 \u05E2\u05D3 \u05E7\u05E6\u05D4 \u05D4\u05DE\u05E9\u05E4\u05D8 \u05D5\u05E0\u05E9\u05D0\u05E8\u05D5\u05EA \u05E9\u05DD.\"],\n          high: [\"\u05D7\u05DC\u05E7\u05D9\u05DD \u05DE\u05E9\u05DE\u05E2\u05D5\u05EA\u05D9\u05D9\u05DD \u05E0\u05E9\u05D0\u05E8\u05D9\u05DD \u05D1\u05DC\u05D9 \u05E0\u05D9\u05E1\u05D5\u05D7 \u05DE\u05DC\u05D0, \u05D0\u05DA \u05DE\u05DE\u05E9\u05D9\u05DB\u05D9\u05DD \u05DC\u05D4\u05D9\u05D5\u05EA \u05E0\u05D5\u05DB\u05D7\u05D9\u05DD.\"]\n        }\n      ],\n      anchors: [\n        [\"\u05D4\u05D3\u05D9\u05D5\u05E7 \u05E0\u05E9\u05D0\u05E8 \u05E0\u05E7\u05D5\u05D3\u05EA \u05D9\u05E6\u05D9\u05D1\u05D5\u05EA \u05E2\u05D1\u05D5\u05E8\u05DA.\"],\n        [\"\u05D4\u05E7\u05D5\u05DC \u05E9\u05DC\u05DA \u05E0\u05E9\u05D0\u05E8 \u05DE\u05D5\u05DB\u05E8 \u05D2\u05DD \u05DB\u05E9\u05D4\u05DE\u05E1\u05D2\u05E8\u05EA \u05DE\u05E9\u05EA\u05E0\u05D4.\"],\n        [\"\u05D9\u05E9 \u05DC\u05DA \u05D1\u05D9\u05D8\u05D7\u05D5\u05DF \u05D9\u05D7\u05E1\u05D9 \u05D1\u05D0\u05D5\u05E4\u05DF \u05E9\u05D1\u05D5 \u05D4\u05DB\u05D5\u05D5\u05E0\u05D4 \u05E9\u05DC\u05DA \u05E0\u05E7\u05DC\u05D8\u05EA.\"],\n        [\"\u05D9\u05E9 \u05D1\u05DA \u05EA\u05D7\u05D5\u05E9\u05EA \u05DE\u05E7\u05D5\u05DD \u05E9\u05D0\u05D9\u05E0\u05D4 \u05EA\u05DC\u05D5\u05D9\u05D4 \u05E8\u05E7 \u05D1\u05E9\u05E4\u05D4.\"],\n        [\"\u05DB\u05E9\u05DE\u05E9\u05D4\u05D5 \u05D7\u05E9\u05D5\u05D1 \u05D1\u05D0\u05DE\u05EA, \u05D0\u05EA/\u05D4 \u05E2\u05D3\u05D9\u05D9\u05DF \u05DE\u05D5\u05E6\u05D0/\u05EA \u05D3\u05E8\u05DA \u05DC\u05D5\u05DE\u05E8 \u05D0\u05D5\u05EA\u05D5.\"]\n      ],\n      closing: {\n        contrast: [\n          \"\u05D4\u05E4\u05E2\u05E8 \u05D1\u05D9\u05DF \u05D4\u05EA\u05E9\u05D5\u05D1\u05D5\u05EA \u05DE\u05E8\u05D0\u05D4 \u05E9\u05DC\u05D0 \u05DB\u05DC \u05DE\u05E8\u05D7\u05D1 \u05D3\u05D5\u05E8\u05E9 \u05DE\u05DE\u05DA \u05D0\u05D5\u05EA\u05D5 \u05DE\u05D0\u05DE\u05E5; \u05D9\u05E9 \u05DE\u05E7\u05D5\u05DE\u05D5\u05EA \u05E9\u05D1\u05D4\u05DD \u05D0\u05EA/\u05D4 \u05E0\u05D5\u05E9\u05DD/\u05EA \u05D1\u05D7\u05D5\u05E4\u05E9\u05D9\u05D5\u05EA, \u05D5\u05D0\u05D7\u05E8\u05D9\u05DD \u05E9\u05D1\u05D4\u05DD \u05DB\u05DC \u05DE\u05D9\u05DC\u05D4 \u05E0\u05E9\u05E7\u05DC\u05EA.\",\n          \"\u05D4\u05D7\u05D5\u05D5\u05D9\u05D4 \u05E9\u05DC\u05DA \u05DE\u05E9\u05EA\u05E0\u05D4 \u05DE\u05D0\u05D5\u05D3 \u05DC\u05E4\u05D9 \u05D4\u05D4\u05E7\u05E9\u05E8. \u05D1\u05DE\u05E7\u05D5\u05DE\u05D5\u05EA \u05DE\u05E1\u05D5\u05D9\u05DE\u05D9\u05DD \u05D4\u05D3\u05D1\u05E8\u05D9\u05DD \u05D6\u05D5\u05E8\u05DE\u05D9\u05DD, \u05D5\u05D1\u05D0\u05D7\u05E8\u05D9\u05DD \u05D0\u05EA/\u05D4 \u05E0\u05D3\u05E8\u05E9/\u05EA \u05DC\u05E2\u05E6\u05D5\u05E8, \u05DC\u05D1\u05D3\u05D5\u05E7 \u05D5\u05DC\u05D1\u05D7\u05D5\u05E8 \u05DE\u05D7\u05D3\u05E9.\"\n        ],\n        even: [\n          \"\u05D4\u05EA\u05E9\u05D5\u05D1\u05D5\u05EA \u05E9\u05DC\u05DA \u05E7\u05E8\u05D5\u05D1\u05D5\u05EA \u05D6\u05D5 \u05DC\u05D6\u05D5, \u05D5\u05DC\u05DB\u05DF \u05D4\u05D7\u05D5\u05D5\u05D9\u05D4 \u05D0\u05D9\u05E0\u05D4 \u05E0\u05E9\u05DC\u05D8\u05EA \u05D1\u05D9\u05D3\u05D9 \u05DE\u05D5\u05E7\u05D3 \u05D0\u05D7\u05D3. \u05D4\u05D9\u05D0 \u05E0\u05D1\u05E0\u05D9\u05EA \u05DE\u05E6\u05D9\u05E8\u05D5\u05E3 \u05E9\u05E7\u05D8 \u05E9\u05DC \u05D4\u05EA\u05D0\u05DE\u05D5\u05EA \u05E7\u05D8\u05E0\u05D5\u05EA \u05E9\u05D7\u05D5\u05D6\u05E8\u05D5\u05EA \u05DC\u05D0\u05D5\u05E8\u05DA \u05D4\u05D9\u05D5\u05DD.\",\n          \"\u05D0\u05D9\u05DF \u05D2\u05D5\u05E8\u05DD \u05D9\u05D7\u05D9\u05D3 \u05E9\u05DE\u05D5\u05D1\u05D9\u05DC \u05D0\u05EA \u05D4\u05EA\u05D5\u05E6\u05D0\u05D4 \u05E9\u05DC\u05DA. \u05D4\u05DE\u05E9\u05DE\u05E2\u05D5\u05EA, \u05D4\u05E7\u05D5\u05DC, \u05D4\u05DE\u05D1\u05D8 \u05D5\u05D4\u05E9\u05D9\u05D9\u05DB\u05D5\u05EA \u05E0\u05E2\u05D9\u05DD \u05D9\u05D7\u05D3 \u05D5\u05DE\u05E9\u05E4\u05D9\u05E2\u05D9\u05DD \u05D6\u05D4 \u05E2\u05DC \u05D6\u05D4 \u05D1\u05DE\u05D9\u05D3\u05D4 \u05D3\u05D5\u05DE\u05D4.\"\n        ],\n        balanced: [\n          \"\u05E9\u05E0\u05D9 \u05DE\u05D5\u05E7\u05D3\u05D9\u05DD \u05D1\u05D5\u05DC\u05D8\u05D9\u05DD \u05D9\u05D5\u05EA\u05E8 \u05DE\u05DF \u05D4\u05D0\u05D7\u05E8\u05D9\u05DD, \u05D0\u05DA \u05D4\u05DD \u05D0\u05D9\u05E0\u05DD \u05DE\u05E1\u05E4\u05E8\u05D9\u05DD \u05D0\u05EA \u05DB\u05DC \u05D4\u05E1\u05D9\u05E4\u05D5\u05E8. \u05D4\u05DD \u05DE\u05E6\u05D1\u05D9\u05E2\u05D9\u05DD \u05E2\u05DC \u05D4\u05DE\u05E7\u05D5\u05DE\u05D5\u05EA \u05E9\u05D1\u05D4\u05DD \u05D4\u05DE\u05E2\u05D1\u05E8 \u05D1\u05D9\u05DF \u05E9\u05E4\u05D5\u05EA \u05DE\u05D5\u05E8\u05D2\u05E9 \u05D0\u05E6\u05DC\u05DA \u05D1\u05DE\u05D9\u05D5\u05D7\u05D3.\",\n          \"\u05D4\u05EA\u05D5\u05E6\u05D0\u05D4 \u05E9\u05DC\u05DA \u05DE\u05D0\u05D5\u05D6\u05E0\u05EA, \u05D0\u05DA \u05E9\u05E0\u05D9 \u05D0\u05D6\u05D5\u05E8\u05D9\u05DD \u05D3\u05D5\u05E8\u05E9\u05D9\u05DD \u05D9\u05D5\u05EA\u05E8 \u05EA\u05E9\u05D5\u05DE\u05EA \u05DC\u05D1. \u05E9\u05DD \u05D0\u05EA/\u05D4 \u05DE\u05E8\u05D2\u05D9\u05E9/\u05D4 \u05D1\u05D0\u05D5\u05E4\u05DF \u05D4\u05D1\u05E8\u05D5\u05E8 \u05D1\u05D9\u05D5\u05EA\u05E8 \u05D0\u05EA \u05D4\u05DE\u05E8\u05D7\u05E7 \u05D1\u05D9\u05DF \u05DE\u05D4 \u05E9\u05E8\u05E6\u05D9\u05EA \u05DC\u05D5\u05DE\u05E8 \u05DC\u05D1\u05D9\u05DF \u05DE\u05D4 \u05E9\u05D4\u05E6\u05DC\u05D9\u05D7 \u05DC\u05D4\u05D2\u05D9\u05E2.\"\n        ]\n      }\n    }\n  },\n  ar: {\n    foundStatusText: \"\u062A\u0645 \u0627\u0644\u0639\u062B\u0648\u0631\",\n    questions: [\n      \"1. \u0625\u0644\u0649 \u0623\u064A \u0645\u062F\u0649 \u064A\u062A\u063A\u064A\u0651\u0631 \u0645\u0639\u0646\u0649 \u0645\u0627 \u062A\u0631\u064A\u062F/\u064A\u0646 \u0642\u0648\u0644\u0647 \u0639\u0646\u062F \u0627\u0644\u0627\u0646\u062A\u0642\u0627\u0644 \u0645\u0646 \u0644\u063A\u0629 \u0625\u0644\u0649 \u0623\u062E\u0631\u0649\u061F\",\n      \"2. \u0625\u0644\u0649 \u0623\u064A \u0645\u062F\u0649 \u062A\u0634\u0639\u0631/\u064A\u0646 \u0623\u0646 \u0646\u0633\u062E\u0629 \u0623\u062E\u0631\u0649 \u0645\u0646\u0643 \u062A\u0638\u0647\u0631 \u0641\u064A \u0643\u0644 \u0644\u063A\u0629\u061F\",\n      \"3. \u0625\u0644\u0649 \u0623\u064A \u0645\u062F\u0649 \u062A\u0634\u0639\u0631/\u064A\u0646 \u0623\u0646 \u0627\u0644\u0622\u062E\u0631\u064A\u0646 \u064A\u0641\u0647\u0645\u0648\u0646\u0643 \u0628\u0634\u0643\u0644 \u0645\u062E\u062A\u0644\u0641 \u0639\u0646\u062F\u0645\u0627 \u062A\u062A\u062D\u062F\u062B/\u064A\u0646 \u0628\u0644\u063A\u0629 \u0623\u062E\u0631\u0649\u061F\",\n      \"4. \u0625\u0644\u0649 \u0623\u064A \u0645\u062F\u0649 \u062A\u0624\u062B\u0631 \u0627\u0644\u0644\u063A\u0629 \u0627\u0644\u062A\u064A \u062A\u062A\u062D\u062F\u062B/\u064A\u0646 \u0628\u0647\u0627 \u0641\u064A \u0625\u062D\u0633\u0627\u0633\u0643 \u0628\u0627\u0644\u0627\u0646\u062A\u0645\u0627\u0621\u061F\",\n      \"5. \u0625\u0644\u0649 \u0623\u064A \u0645\u062F\u0649 \u062A\u0648\u062C\u062F \u0641\u064A\u0643 \u0623\u0634\u064A\u0627\u0621 \u0644\u0627 \u062A\u0633\u062A\u0637\u064A\u0639 \u0623\u064A \u0644\u063A\u0629 \u0627\u0644\u062A\u0639\u0628\u064A\u0631 \u0639\u0646\u0647\u0627 \u0628\u0627\u0644\u0643\u0627\u0645\u0644\u061F\"\n    ],\n    scaleAnchors: [\n      { value: \"1\", text: \"\u062A\u0642\u0631\u064A\u0628\u064B\u0627 \u0623\u0628\u062F\u064B\u0627\" },\n      { value: \"3\", text: \"\u0623\u062D\u064A\u0627\u0646\u064B\u0627\" },\n      { value: \"5\", text: \"\u0625\u0644\u0649 \u062D\u062F \u0643\u0628\u064A\u0631 \u062C\u062F\u064B\u0627\" }\n    ],\n    ticketTitle: \"\u0628\u064A\u0646 \u0627\u0644\u0644\u063A\u0627\u062A\",\n    ticketVersion: \"\u0645\u0634\u0631\u0648\u0639 \u062A\u062E\u0631\u062C 2026\",\n    reflectionLabel: \"\u0642\u0631\u0627\u0621\u0629 \u0634\u062E\u0635\u064A\u0629\",\n    noteLabel: \"\u0645\u0628\u0646\u064A\u0629 \u0639\u0644\u0649 \u0625\u062C\u0627\u0628\u0627\u062A\u0643 \u0627\u0644\u062E\u0645\u0633\",\n    footerNote: \"\u0627\u0644\u0646\u062A\u064A\u062C\u0629 \u062A\u0635\u0641 \u0623\u0633\u0644\u0648\u0628 \u0627\u0633\u062A\u062C\u0627\u0628\u062A\u0643 \u0641\u064A \u0647\u0630\u0647 \u0627\u0644\u0644\u062D\u0638\u0629\u061B \u0648\u0644\u064A\u0633\u062A \u062D\u0643\u0645\u064B\u0627 \u062B\u0627\u0628\u062A\u064B\u0627.\",\n    barcodeLabel: \"\u0627\u0646\u0639\u0643\u0627\u0633\",\n    labels: [\n      \"\u0645\u0627 \u0627\u0644\u0630\u064A \u064A\u0646\u062A\u0642\u0644 \u0628\u064A\u0646 \u0627\u0644\u0644\u063A\u0627\u062A\",\n      \"\u0643\u064A\u0641 \u062A\u062A\u063A\u064A\u0631/\u064A\u0646\",\n      \"\u0643\u064A\u0641 \u064A\u0641\u0647\u0645\u0643 \u0627\u0644\u0622\u062E\u0631\u0648\u0646\",\n      \"\u0643\u064A\u0641 \u062A\u0624\u062B\u0631 \u0627\u0644\u0644\u063A\u0629 \u0641\u064A \u0627\u0644\u0627\u0646\u062A\u0645\u0627\u0621\",\n      \"\u0645\u0627 \u0627\u0644\u0630\u064A \u064A\u0635\u0639\u0628 \u0627\u0644\u062A\u0639\u0628\u064A\u0631 \u0639\u0646\u0647\"\n    ],\n    shortLabels: [\n      \"\u0645\u0639\u0646\u0649\",\n      \"\u062A\u063A\u064A\u0651\u0631\",\n      \"\u0641\u0647\u0645\",\n      \"\u0627\u0646\u062A\u0645\u0627\u0621\",\n      \"\u062A\u0639\u0628\u064A\u0631\"\n    ],\n    statements: [\n      [\n        \"\u062A\u0628\u0642\u0649 \u0627\u0644\u0643\u0644\u0645\u0627\u062A \u0634\u0628\u0647 \u0643\u0627\u0645\u0644\u0629.\",\n        \"\u064A\u062A\u063A\u064A\u0631 \u0627\u0644\u0642\u0644\u064A\u0644 \u0641\u064A \u0627\u0644\u0637\u0631\u064A\u0642.\",\n        \"\u064A\u062A\u0628\u062F\u0644 \u062C\u0632\u0621 \u0645\u0646 \u0627\u0644\u0642\u0635\u062F.\",\n        \"\u064A\u0635\u0644 \u0627\u0644\u0645\u0639\u0646\u0649 \u0628\u0634\u0643\u0644 \u062C\u0632\u0626\u064A.\",\n        \"\u064A\u0628\u0642\u0649 \u0627\u0644\u0643\u062B\u064A\u0631 \u062E\u0644\u0641\u0643.\"\n      ],\n      [\n        \"\u064A\u0631\u0627\u0641\u0642\u0643 \u0627\u0644\u0635\u0648\u062A \u0646\u0641\u0633\u0647.\",\n        \"\u062A\u062A\u063A\u064A\u0631 \u0627\u0644\u0646\u0628\u0631\u0629 \u0642\u0644\u064A\u0644\u064B\u0627.\",\n        \"\u064A\u0638\u0647\u0631 \u062C\u0627\u0646\u0628 \u0622\u062E\u0631 \u0645\u0646\u0643.\",\n        \"\u0643\u0644 \u0644\u063A\u0629 \u062A\u063A\u064A\u0651\u0631 \u062D\u0636\u0648\u0631\u0643.\",\n        \"\u0641\u064A \u0643\u0644 \u0644\u063A\u0629 \u062A\u0638\u0647\u0631 \u0646\u0633\u062E\u0629 \u0623\u062E\u0631\u0649 \u0645\u0646\u0643.\"\n      ],\n      [\n        \"\u063A\u0627\u0644\u0628\u064B\u0627 \u064A\u0633\u0645\u0639 \u0627\u0644\u0622\u062E\u0631\u0648\u0646 \u0642\u0635\u062F\u0643.\",\n        \"\u0623\u062D\u064A\u0627\u0646\u064B\u0627 \u064A\u064F\u0642\u0631\u0623 \u0634\u064A\u0621 \u0628\u0634\u0643\u0644 \u0622\u062E\u0631.\",\n        \"\u064A\u0636\u064A\u0639 \u062C\u0632\u0621 \u0645\u0646\u0643 \u0641\u064A \u0627\u0644\u0641\u0647\u0645.\",\n        \"\u062A\u062F\u062E\u0644 \u0627\u0644\u0627\u0641\u062A\u0631\u0627\u0636\u0627\u062A \u0625\u0644\u0649 \u0627\u0644\u062D\u062F\u064A\u062B.\",\n        \"\u062A\u062A\u0623\u0646\u0649 \u0642\u0628\u0644 \u0643\u0644 \u062C\u0645\u0644\u0629.\"\n      ],\n      [\n        \"\u064A\u0628\u0642\u0649 \u0627\u0646\u062A\u0645\u0627\u0624\u0643 \u062B\u0627\u0628\u062A\u064B\u0627.\",\n        \"\u062A\u062A\u063A\u064A\u0631 \u0627\u0644\u0631\u0627\u062D\u0629 \u0642\u0644\u064A\u0644\u064B\u0627.\",\n        \"\u064A\u063A\u064A\u0651\u0631 \u0627\u0644\u0645\u0643\u0627\u0646 \u0627\u0644\u0625\u062D\u0633\u0627\u0633.\",\n        \"\u062A\u0641\u062A\u062D \u0627\u0644\u0644\u063A\u0629 \u0645\u0633\u0627\u062D\u0629 \u0623\u0648 \u062A\u063A\u0644\u0642\u0647\u0627.\",\n        \"\u064A\u062A\u0639\u0644\u0642 \u0627\u0644\u0627\u0646\u062A\u0645\u0627\u0621 \u0628\u0627\u0644\u0637\u0631\u064A\u0642\u0629 \u0627\u0644\u062A\u064A \u062A\u064F\u0633\u0645\u0639 \u0628\u0647\u0627.\"\n      ],\n      [\n        \"\u062A\u062C\u062F \u0645\u0639\u0638\u0645 \u0627\u0644\u0623\u0634\u064A\u0627\u0621 \u0643\u0644\u0645\u0627\u062A\u0647\u0627.\",\n        \"\u064A\u0628\u0642\u0649 \u0627\u0644\u0642\u0644\u064A\u0644 \u0641\u064A \u0627\u0644\u062F\u0627\u062E\u0644.\",\n        \"\u0647\u0646\u0627\u0643 \u0623\u0645\u0648\u0631 \u0628\u0644\u0627 \u0635\u064A\u0627\u063A\u0629 \u0643\u0627\u0645\u0644\u0629.\",\n        \"\u064A\u0628\u0642\u0649 \u0627\u0644\u0643\u062B\u064A\u0631 \u0635\u0627\u0645\u062A\u064B\u0627.\",\n        \"\u0623\u062B\u0642\u0644 \u0645\u0627 \u0641\u064A\u0643 \u064A\u0628\u0642\u0649 \u0623\u062D\u064A\u0627\u0646\u064B\u0627 \u0628\u0644\u0627 \u0627\u0633\u0645.\"\n      ]\n    ],\n    reflectionSystem: {\n      opening: {\n        low: [\n          \"\u062A\u062A\u0646\u0642\u0644/\u064A\u0646 \u0628\u064A\u0646 \u0627\u0644\u0644\u063A\u0627\u062A \u0645\u0646 \u062F\u0648\u0646 \u0623\u0646 \u062A\u0641\u0642\u062F/\u064A \u0627\u062A\u062C\u0627\u0647\u0643. \u064A\u062A\u063A\u064A\u0651\u0631 \u0627\u0644\u0635\u0648\u062A\u060C \u0644\u0643\u0646 \u0645\u0627 \u0623\u0631\u062F\u062A \u0642\u0648\u0644\u0647 \u064A\u0628\u0642\u0649 \u0642\u0631\u064A\u0628\u064B\u0627 \u0645\u0646 \u0623\u0635\u0644\u0647.\",\n          \"\u0627\u0644\u0627\u0646\u062A\u0642\u0627\u0644 \u0628\u064A\u0646 \u0627\u0644\u0644\u063A\u0627\u062A \u0637\u0628\u064A\u0639\u064A \u0644\u062F\u064A\u0643 \u0646\u0633\u0628\u064A\u064B\u0627. \u062A\u062A\u0628\u062F\u0644 \u0627\u0644\u0643\u0644\u0645\u0627\u062A\u060C \u0644\u0643\u0646 \u0627\u0644\u0635\u0648\u062A \u0627\u0644\u0630\u064A \u062E\u0644\u0641\u0647\u0627 \u064A\u0628\u0642\u0649 \u0645\u0623\u0644\u0648\u0641\u064B\u0627 \u0648\u0648\u0627\u0636\u062D\u064B\u0627.\"\n        ],\n        mid: [\n          \"\u0641\u064A \u0643\u0644 \u0644\u063A\u0629 \u064A\u0643\u062A\u0633\u0628 \u0635\u0648\u062A\u0643 \u0646\u0628\u0631\u0629 \u0645\u062E\u062A\u0644\u0641\u0629 \u0642\u0644\u064A\u0644\u064B\u0627. \u062A\u0639\u062F\u0651\u0644/\u064A\u0646 \u0627\u0644\u0643\u0644\u0645\u0627\u062A \u0628\u062D\u0633\u0628 \u0627\u0644\u0645\u0643\u0627\u0646 \u0648\u0645\u0646 \u0623\u0645\u0627\u0645\u0643\u060C \u0644\u0643\u0646\u0643 \u062A\u062D\u0627\u0641\u0638/\u064A\u0646 \u0639\u0644\u0649 \u062E\u064A\u0637 \u064A\u0635\u0644 \u0628\u064A\u0646 \u0627\u0644\u0646\u0633\u062E \u0627\u0644\u0645\u062E\u062A\u0644\u0641\u0629.\",\n          \"\u0627\u0644\u0627\u0646\u062A\u0642\u0627\u0644 \u0628\u064A\u0646 \u0627\u0644\u0644\u063A\u0627\u062A \u064A\u063A\u064A\u0651\u0631 \u0627\u0644\u0625\u064A\u0642\u0627\u0639 \u0648\u062F\u0631\u062C\u0629 \u0627\u0646\u0643\u0634\u0627\u0641\u0643. \u0644\u0627 \u064A\u062A\u063A\u064A\u0631 \u0643\u0644 \u0634\u064A\u0621\u060C \u0644\u0643\u0646 \u062C\u0627\u0646\u0628\u064B\u0627 \u0645\u062E\u062A\u0644\u0641\u064B\u0627 \u0645\u0646\u0643 \u064A\u0638\u0647\u0631 \u0641\u064A \u0643\u0644 \u0645\u0633\u0627\u062D\u0629.\"\n        ],\n        high: [\n          \"\u0627\u0644\u0627\u0646\u062A\u0642\u0627\u0644 \u0628\u064A\u0646 \u0627\u0644\u0644\u063A\u0627\u062A \u064A\u0637\u0644\u0628 \u0645\u0646\u0643 \u0627\u062E\u062A\u064A\u0627\u0631\u064B\u0627 \u062C\u062F\u064A\u062F\u064B\u0627 \u0641\u064A \u0643\u0644 \u0645\u0631\u0629. \u062A\u0635\u0628\u062D \u0628\u0639\u0636 \u0627\u0644\u062C\u0648\u0627\u0646\u0628 \u0623\u0648\u0636\u062D\u060C \u0648\u062A\u062A\u0631\u0627\u062C\u0639 \u0623\u062E\u0631\u0649 \u0643\u064A \u062A\u062A\u0645\u0643\u0646/\u064A \u0645\u0646 \u0623\u0646 \u062A\u064F\u0633\u0645\u0639/\u064A \u0648\u0623\u0646 \u062A\u064F\u0641\u0647\u0645/\u064A.\",\n          \"\u0641\u064A \u0643\u0644 \u0644\u063A\u0629 \u062A\u0639\u064A\u062F/\u064A\u0646 \u0628\u0646\u0627\u0621 \u0627\u0644\u0637\u0631\u064A\u0642\u0629 \u0627\u0644\u062A\u064A \u064A\u0631\u0627\u0643 \u0628\u0647\u0627 \u0627\u0644\u0622\u062E\u0631\u0648\u0646. \u0627\u0644\u062C\u0647\u062F \u0644\u064A\u0633 \u0641\u064A \u0625\u064A\u062C\u0627\u062F \u0627\u0644\u0643\u0644\u0645\u0627\u062A \u0641\u0642\u0637\u060C \u0628\u0644 \u0641\u064A \u0627\u062E\u062A\u064A\u0627\u0631 \u0645\u0627 \u0633\u064A\u0638\u0647\u0631 \u0648\u0645\u0627 \u0633\u064A\u0628\u0642\u0649 \u0641\u064A \u0627\u0644\u062E\u0644\u0641.\"\n        ]\n      },\n      dimensions: [\n        {\n          low: [\"\u064A\u0635\u0644 \u0645\u0639\u0638\u0645 \u0627\u0644\u0645\u0639\u0646\u0649 \u0645\u0639\u0643\u060C \u0644\u0630\u0644\u0643 \u0644\u0627 \u062A\u0636\u0637\u0631/\u064A\u0646 \u0625\u0644\u0649 \u062A\u0631\u0643 \u0627\u0644\u0643\u062B\u064A\u0631 \u0641\u064A \u0627\u0644\u0637\u0631\u064A\u0642.\"],\n          mid: [\"\u064A\u0635\u0644 \u0627\u0644\u0623\u0633\u0627\u0633\u060C \u0644\u0643\u0646 \u0628\u0639\u0636 \u0627\u0644\u062A\u0641\u0627\u0635\u064A\u0644 \u0627\u0644\u062F\u0642\u064A\u0642\u0629 \u062A\u0628\u0642\u0649 \u062E\u0644\u0641\u0643 \u0623\u0648 \u062A\u0623\u062E\u0630 \u0634\u0643\u0644\u064B\u0627 \u0622\u062E\u0631.\"],\n          high: [\"\u0645\u0627 \u064A\u0635\u0644 \u0625\u0644\u0649 \u0627\u0644\u0622\u062E\u0631\u064A\u0646 \u0644\u064A\u0633 \u0625\u0644\u0627 \u062C\u0632\u0621\u064B\u0627 \u0645\u0645\u0627 \u0623\u0631\u062F\u062A \u062D\u0645\u0644\u0647 \u0645\u0639\u0643.\"]\n        },\n        {\n          low: [\"\u064A\u0628\u0642\u0649 \u062D\u0636\u0648\u0631\u0643 \u0642\u0631\u064A\u0628\u064B\u0627 \u0645\u0646 \u0646\u0641\u0633\u0647 \u062D\u062A\u0649 \u0639\u0646\u062F\u0645\u0627 \u062A\u062A\u0628\u062F\u0644 \u0627\u0644\u0644\u063A\u0629.\"],\n          mid: [\"\u062A\u062F\u0639\u0648 \u0643\u0644 \u0644\u063A\u0629 \u062C\u0627\u0646\u0628\u064B\u0627 \u0645\u062E\u062A\u0644\u0641\u064B\u0627 \u0642\u0644\u064A\u0644\u064B\u0627 \u0645\u0646\u0643\u060C \u0645\u0646 \u062F\u0648\u0646 \u0623\u0646 \u062A\u0645\u062D\u0648 \u0627\u0644\u062C\u0648\u0627\u0646\u0628 \u0627\u0644\u0623\u062E\u0631\u0649.\"],\n          high: [\"\u062A\u0636\u0639\u0643 \u0643\u0644 \u0644\u063A\u0629 \u0641\u064A \u0645\u0648\u0642\u0639 \u0645\u062E\u062A\u0644\u0641 \u0648\u062A\u0628\u0631\u0632 \u0646\u0633\u062E\u0629 \u0623\u062E\u0631\u0649 \u0645\u0646\u0643.\"]\n        },\n        {\n          low: [\"\u0641\u064A \u0645\u0639\u0638\u0645 \u0627\u0644\u0623\u062D\u064A\u0627\u0646 \u064A\u064F\u0641\u0647\u0645 \u0642\u0635\u062F\u0643 \u0643\u0645\u0627 \u0623\u0631\u062F\u062A.\"],\n          mid: [\"\u0623\u062D\u064A\u0627\u0646\u064B\u0627 \u064A\u0631\u0649 \u0627\u0644\u0622\u062E\u0631\u0648\u0646 \u0637\u0628\u0642\u0629 \u0648\u0627\u062D\u062F\u0629 \u0641\u0642\u0637\u060C \u0641\u062A\u0643\u0645\u0651\u0644/\u064A\u0646 \u0645\u0627 \u064A\u0646\u0642\u0635 \u0623\u062B\u0646\u0627\u0621 \u0627\u0644\u062D\u062F\u064A\u062B.\"],\n          high: [\"\u062A\u062F\u062E\u0644 \u0646\u0638\u0631\u0629 \u0627\u0644\u0622\u062E\u0631\u064A\u0646 \u0628\u064A\u0646 \u0627\u0644\u0643\u0644\u0645\u0627\u062A \u0648\u062A\u063A\u064A\u0651\u0631 \u0627\u0644\u0637\u0631\u064A\u0642\u0629 \u0627\u0644\u062A\u064A \u064A\u064F\u0633\u0645\u0639 \u0628\u0647\u0627 \u0635\u0648\u062A\u0643.\"]\n        },\n        {\n          low: [\"\u0625\u062D\u0633\u0627\u0633\u0643 \u0628\u0627\u0644\u0645\u0643\u0627\u0646 \u0644\u0627 \u064A\u0639\u062A\u0645\u062F \u0643\u062B\u064A\u0631\u064B\u0627 \u0639\u0644\u0649 \u0627\u0644\u0644\u063A\u0629 \u0627\u0644\u062A\u064A \u062A\u062A\u062D\u062F\u062B/\u064A\u0646 \u0628\u0647\u0627.\"],\n          mid: [\"\u062A\u062A\u0628\u062F\u0644 \u0627\u0644\u0631\u0627\u062D\u0629 \u0648\u0627\u0644\u0627\u0646\u062A\u0645\u0627\u0621 \u0628\u062D\u0633\u0628 \u0627\u0644\u0645\u062D\u064A\u0637 \u0648\u0628\u062D\u0633\u0628 \u0645\u0646 \u064A\u0642\u0641 \u0623\u0645\u0627\u0645\u0643.\"],\n          high: [\"\u062A\u0624\u062B\u0631 \u0627\u0644\u0644\u063A\u0629 \u0641\u064A \u0627\u0644\u0645\u0643\u0627\u0646 \u0627\u0644\u0630\u064A \u062A\u0633\u0645\u062D/\u064A\u0646 \u0641\u064A\u0647 \u0644\u0646\u0641\u0633\u0643 \u0628\u0627\u0644\u0627\u0646\u0641\u062A\u0627\u062D \u0648\u0627\u0644\u0634\u0639\u0648\u0631 \u0628\u0623\u0646\u0643 \u062C\u0632\u0621 \u0645\u0646\u0647.\"]\n        },\n        {\n          low: [\"\u062A\u0646\u062C\u062D \u0645\u0639\u0638\u0645 \u0627\u0644\u0623\u0645\u0648\u0631 \u0627\u0644\u0645\u0647\u0645\u0629 \u0641\u064A \u0627\u0644\u0639\u062B\u0648\u0631 \u0639\u0644\u0649 \u0643\u0644\u0645\u0627\u062A\u0647\u0627.\"],\n          mid: [\"\u0647\u0646\u0627\u0643 \u062A\u062C\u0627\u0631\u0628 \u062A\u0635\u0644 \u0625\u0644\u0649 \u062D\u0627\u0641\u0629 \u0627\u0644\u062C\u0645\u0644\u0629 \u062B\u0645 \u062A\u0628\u0642\u0649 \u0647\u0646\u0627\u0643.\"],\n          high: [\"\u062A\u0628\u0642\u0649 \u0623\u062C\u0632\u0627\u0621 \u0645\u0647\u0645\u0629 \u0645\u0646 \u062F\u0648\u0646 \u0635\u064A\u0627\u063A\u0629 \u0643\u0627\u0645\u0644\u0629\u060C \u0644\u0643\u0646\u0647\u0627 \u062A\u0638\u0644 \u062D\u0627\u0636\u0631\u0629 \u0641\u064A\u0643.\"]\n        }\n      ],\n      anchors: [\n        [\"\u062A\u0628\u0642\u0649 \u0627\u0644\u062F\u0642\u0629 \u0646\u0642\u0637\u0629 \u062B\u0628\u0627\u062A \u0644\u062F\u064A\u0643.\"],\n        [\"\u064A\u0628\u0642\u0649 \u0635\u0648\u062A\u0643 \u0645\u0623\u0644\u0648\u0641\u064B\u0627 \u062D\u062A\u0649 \u0639\u0646\u062F\u0645\u0627 \u064A\u062A\u063A\u064A\u0631 \u0627\u0644\u0625\u0637\u0627\u0631.\"],\n        [\"\u0644\u062F\u064A\u0643 \u062B\u0642\u0629 \u0646\u0633\u0628\u064A\u0629 \u0641\u064A \u0627\u0644\u0637\u0631\u064A\u0642\u0629 \u0627\u0644\u062A\u064A \u064A\u0635\u0644 \u0628\u0647\u0627 \u0642\u0635\u062F\u0643.\"],\n        [\"\u0644\u062F\u064A\u0643 \u0625\u062D\u0633\u0627\u0633 \u0628\u0627\u0644\u0645\u0643\u0627\u0646 \u0644\u0627 \u064A\u0639\u062A\u0645\u062F \u0639\u0644\u0649 \u0627\u0644\u0644\u063A\u0629 \u0648\u062D\u062F\u0647\u0627.\"],\n        [\"\u0639\u0646\u062F\u0645\u0627 \u064A\u0643\u0648\u0646 \u0627\u0644\u0623\u0645\u0631 \u0645\u0647\u0645\u064B\u0627\u060C \u062A\u062C\u062F/\u064A\u0646 \u0637\u0631\u064A\u0642\u0629 \u0644\u0642\u0648\u0644 \u0645\u0627 \u062A\u0631\u064A\u062F/\u064A\u0646.\"]\n      ],\n      closing: {\n        contrast: [\n          \"\u0627\u0644\u0641\u0627\u0631\u0642 \u0628\u064A\u0646 \u0627\u0644\u0625\u062C\u0627\u0628\u0627\u062A \u064A\u0628\u064A\u0651\u0646 \u0623\u0646 \u0643\u0644 \u0645\u0633\u0627\u062D\u0629 \u0644\u0627 \u062A\u0637\u0644\u0628 \u0645\u0646\u0643 \u0627\u0644\u062C\u0647\u062F \u0646\u0641\u0633\u0647\u061B \u0641\u064A \u0623\u0645\u0627\u0643\u0646 \u062A\u062A\u0646\u0641\u0633/\u064A\u0646 \u0628\u062D\u0631\u064A\u0629\u060C \u0648\u0641\u064A \u0623\u062E\u0631\u0649 \u062A\u0632\u0646/\u064A\u0646 \u0643\u0644 \u0643\u0644\u0645\u0629.\",\n          \"\u062A\u062A\u063A\u064A\u0631 \u062A\u062C\u0631\u0628\u062A\u0643 \u0643\u062B\u064A\u0631\u064B\u0627 \u0628\u062D\u0633\u0628 \u0627\u0644\u0633\u064A\u0627\u0642. \u0641\u064A \u0628\u0639\u0636 \u0627\u0644\u0623\u0645\u0627\u0643\u0646 \u062A\u0633\u064A\u0631 \u0627\u0644\u0623\u0645\u0648\u0631 \u0628\u0633\u0647\u0648\u0644\u0629\u060C \u0648\u0641\u064A \u0623\u062E\u0631\u0649 \u062A\u062A\u0648\u0642\u0641/\u064A\u0646 \u0644\u062A\u0631\u0627\u062C\u0639/\u064A \u0648\u062A\u062E\u062A\u0627\u0631/\u064A \u0645\u0646 \u062C\u062F\u064A\u062F.\"\n        ],\n        even: [\n          \"\u0625\u062C\u0627\u0628\u0627\u062A\u0643 \u0645\u062A\u0642\u0627\u0631\u0628\u0629\u060C \u0644\u0630\u0644\u0643 \u0644\u0627 \u064A\u0633\u064A\u0637\u0631 \u0645\u062D\u0648\u0631 \u0648\u0627\u062D\u062F \u0639\u0644\u0649 \u062A\u062C\u0631\u0628\u062A\u0643. \u062A\u062A\u0643\u0648\u0651\u0646 \u0627\u0644\u0646\u062A\u064A\u062C\u0629 \u0645\u0646 \u0645\u062C\u0645\u0648\u0639\u0629 \u0647\u0627\u062F\u0626\u0629 \u0645\u0646 \u0627\u0644\u062A\u0639\u062F\u064A\u0644\u0627\u062A \u0627\u0644\u0635\u063A\u064A\u0631\u0629 \u0627\u0644\u062A\u064A \u062A\u062A\u0643\u0631\u0631 \u062E\u0644\u0627\u0644 \u0627\u0644\u064A\u0648\u0645.\",\n          \"\u0644\u0627 \u064A\u0648\u062C\u062F \u0639\u0627\u0645\u0644 \u0648\u0627\u062D\u062F \u064A\u0642\u0648\u062F \u0646\u062A\u064A\u062C\u062A\u0643. \u0627\u0644\u0645\u0639\u0646\u0649 \u0648\u0627\u0644\u0635\u0648\u062A \u0648\u0646\u0638\u0631\u0629 \u0627\u0644\u0622\u062E\u0631\u064A\u0646 \u0648\u0627\u0644\u0627\u0646\u062A\u0645\u0627\u0621 \u062A\u062A\u062D\u0631\u0643 \u0645\u0639\u064B\u0627 \u0648\u062A\u0624\u062B\u0631 \u0641\u064A \u0628\u0639\u0636\u0647\u0627 \u0628\u062F\u0631\u062C\u0627\u062A \u0645\u062A\u0642\u0627\u0631\u0628\u0629.\"\n        ],\n        balanced: [\n          \"\u064A\u0638\u0647\u0631 \u0645\u062D\u0648\u0631\u0627\u0646 \u0623\u0643\u062B\u0631 \u0645\u0646 \u063A\u064A\u0631\u0647\u0645\u0627\u060C \u0644\u0643\u0646\u0647\u0645\u0627 \u0644\u0627 \u064A\u0631\u0648\u064A\u0627\u0646 \u0627\u0644\u0642\u0635\u0629 \u0643\u0627\u0645\u0644\u0629. \u0625\u0646\u0647\u0645\u0627 \u064A\u0634\u064A\u0631\u0627\u0646 \u0625\u0644\u0649 \u0627\u0644\u0623\u0645\u0627\u0643\u0646 \u0627\u0644\u062A\u064A \u062A\u0634\u0639\u0631/\u064A\u0646 \u0641\u064A\u0647\u0627 \u0628\u0648\u0636\u0648\u062D \u0623\u0643\u0628\u0631 \u0628\u0627\u0644\u0627\u0646\u062A\u0642\u0627\u0644 \u0628\u064A\u0646 \u0627\u0644\u0644\u063A\u0627\u062A.\",\n          \"\u0646\u062A\u064A\u062C\u062A\u0643 \u0645\u062A\u0648\u0627\u0632\u0646\u0629\u060C \u0644\u0643\u0646 \u062C\u0627\u0646\u0628\u064A\u0646 \u064A\u062D\u062A\u0627\u062C\u0627\u0646 \u0625\u0644\u0649 \u0627\u0646\u062A\u0628\u0627\u0647 \u0623\u0643\u0628\u0631. \u0647\u0646\u0627\u0643 \u062A\u0634\u0639\u0631/\u064A\u0646 \u0628\u0648\u0636\u0648\u062D \u0628\u0627\u0644\u0645\u0633\u0627\u0641\u0629 \u0628\u064A\u0646 \u0645\u0627 \u0623\u0631\u062F\u062A \u0642\u0648\u0644\u0647 \u0648\u0645\u0627 \u0627\u0633\u062A\u0637\u0627\u0639 \u0627\u0644\u0648\u0635\u0648\u0644.\"\n        ]\n      }\n    }\n  }\n};\n\nfunction setup() {\n  const area = document.getElementById(\"canvasArea\");\n  cnv = createCanvas(area.clientWidth, area.clientHeight);\n  cnv.parent(\"canvasArea\");\n  pixelDensity(1);\n  noSmooth();\n  imageMode(CORNER);\n\n  ticketG = createGraphics(PRINT_W, PRINT_H);\n  ticketG.pixelDensity(1);\n  ticketG.noSmooth();\n\n  // One random identity seed per visitor. It stays stable while that visitor\n  // changes answers during the current session.\n  userSeed = generateUserSeed();\n\n  setupQuestionsUI();\n  setupLanguageTabs();\n  setupPrintControl();\n  setupSharedFooterControls();\n  updateLanguageUI();\n  tryLoadFont();\n  markTicketDirty();\n}\n\nfunction tryLoadFont() {\n  // Use the CSS @font-face instead of p5.loadFont(). p5.Font draws glyph paths\n  // in source order and does not reliably apply Arabic/Hebrew bidi shaping.\n  // Native Canvas text with direction=\"rtl\" keeps letters connected and ordered.\n  if (document.fonts && document.fonts.load) {\n    document.fonts\n      .load('32px \"SimplerMono\"')\n      .then(function() {\n        fontReady = true;\n        markTicketDirty();\n      })\n      .catch(function() {\n        console.warn(\"Could not load SimplerPro_HLAR_Mono-Regular 2.otf. Falling back to Arial.\");\n        fontReady = false;\n        markTicketDirty();\n      });\n  } else {\n    fontReady = false;\n    markTicketDirty();\n  }\n}\n\nfunction draw() {\n  background(GRAY_BG);\n  if (ticketDirty) {\n    renderHighResolutionTicket();\n  }\n  drawTicketPreview();\n}\n\nfunction setupLanguageTabs() {\n  const projectTitle = document.getElementById(\"projectTitle\");\n  if (projectTitle) {\n    projectTitle.addEventListener(\"click\", function(event) {\n      event.preventDefault();\n      event.stopPropagation();\n      if (window.parent && window.parent !== window && typeof window.parent.closeReflectionTicket === \"function\") {\n        window.parent.closeReflectionTicket();\n        if (typeof window.parent.returnToMainGridFromNavigation === \"function\") {\n          window.parent.returnToMainGridFromNavigation();\n        }\n      }\n    });\n  }\n}\n\nfunction updateLanguageUI() {\n  ticketLang = currentLang;\n  document.body.dataset.ticketLanguage = currentLang;\n  markTicketDirty();\n}\n\nfunction renderQuestions() {\n  const panel = document.getElementById(\"questionsInner\");\n  const hebrewQuestions = CONTENT.he.questions;\n  const arabicQuestions = CONTENT.ar.questions;\n  const hebrewAnchors = CONTENT.he.scaleAnchors;\n  const arabicAnchors = CONTENT.ar.scaleAnchors;\n  panel.innerHTML = \"\";\n\n  for (let i = 0; i < hebrewQuestions.length; i++) {\n    const block = document.createElement(\"section\");\n    block.className = \"questionBlock\";\n    block.setAttribute(\"aria-labelledby\", \"question-he-\" + (i + 1));\n\n    const qText = document.createElement(\"div\");\n    qText.className = \"questionText overlapText\";\n\n    const qHe = document.createElement(\"span\");\n    qHe.className = \"hebrewLayer\";\n    qHe.lang = \"he\";\n    qHe.id = \"question-he-\" + (i + 1);\n    qHe.textContent = hebrewQuestions[i];\n\n    const qAr = document.createElement(\"span\");\n    qAr.className = \"arabicLayer\";\n    qAr.lang = \"ar\";\n    qAr.textContent = arabicQuestions[i];\n\n    qText.appendChild(qHe);\n    qText.appendChild(qAr);\n\n    const row = document.createElement(\"div\");\n    row.className = \"sliderRow\";\n\n    const scale = document.createElement(\"div\");\n    scale.className = \"sliderScale\";\n\n    const trackWrap = document.createElement(\"div\");\n    trackWrap.className = \"sliderTrackWrap\";\n\n    const slider = document.createElement(\"input\");\n    slider.type = \"range\";\n    slider.min = \"1\";\n    slider.max = \"5\";\n    slider.step = \"1\";\n    slider.value = String(answers[i]);\n    slider.id = \"q\" + (i + 1);\n    slider.setAttribute(\"aria-label\", hebrewQuestions[i] + \" / \" + arabicQuestions[i]);\n    slider.setAttribute(\"aria-valuetext\", String(answers[i]));\n\n    const markers = document.createElement(\"div\");\n    markers.className = \"scaleMarkers\";\n    markers.setAttribute(\"aria-hidden\", \"true\");\n    for (let markerIndex = 0; markerIndex < 5; markerIndex++) {\n      markers.appendChild(document.createElement(\"span\"));\n    }\n\n    const anchorRow = document.createElement(\"div\");\n    anchorRow.className = \"anchorRow\";\n\n    for (let anchorIndex = 0; anchorIndex < 3; anchorIndex++) {\n      const anchorItem = document.createElement(\"div\");\n      anchorItem.className = \"anchorItem\";\n\n      const anchorNumber = document.createElement(\"span\");\n      anchorNumber.className = \"anchorNumber\";\n      anchorNumber.textContent = hebrewAnchors[anchorIndex].value;\n\n      const anchorOverlap = document.createElement(\"div\");\n      anchorOverlap.className = \"anchorOverlap overlapText\";\n\n      const anchorHe = document.createElement(\"span\");\n      anchorHe.className = \"hebrewLayer\";\n      anchorHe.lang = \"he\";\n      anchorHe.textContent = hebrewAnchors[anchorIndex].text;\n\n      const anchorAr = document.createElement(\"span\");\n      anchorAr.className = \"arabicLayer\";\n      anchorAr.lang = \"ar\";\n      anchorAr.textContent = arabicAnchors[anchorIndex].text;\n\n      anchorOverlap.appendChild(anchorHe);\n      anchorOverlap.appendChild(anchorAr);\n      anchorItem.appendChild(anchorNumber);\n      anchorItem.appendChild(anchorOverlap);\n      anchorRow.appendChild(anchorItem);\n    }\n\n    const value = document.createElement(\"div\");\n    value.className = \"hiddenValue\";\n    value.id = \"v\" + (i + 1);\n    value.textContent = String(answers[i]);\n\n    updateSliderFill(slider, trackWrap);\n\n    slider.addEventListener(\"input\", function() {\n      answers[i] = Number(slider.value);\n      value.textContent = slider.value;\n      slider.setAttribute(\"aria-valuetext\", slider.value);\n      updateSliderFill(slider, trackWrap);\n      markTicketDirty();\n    });\n\n    trackWrap.appendChild(markers);\n    trackWrap.appendChild(slider);\n    scale.appendChild(trackWrap);\n    scale.appendChild(anchorRow);\n    row.appendChild(scale);\n\n    block.appendChild(qText);\n    block.appendChild(row);\n    block.appendChild(value);\n    panel.appendChild(block);\n  }\n}\n\nfunction updateSliderFill(slider, trackWrap) {\n  const min = Number(slider.min || 0);\n  const max = Number(slider.max || 100);\n  const value = Number(slider.value);\n  const percentage = max === min ? 0 : ((value - min) / (max - min)) * 100;\n  trackWrap.style.setProperty(\"--fill-percent\", percentage + \"%\");\n}\n\nfunction setupQuestionsUI() {\n  renderQuestions();\n}\n\nfunction markTicketDirty() {\n  patternSeed = makeSeedFromAnswers();\n  ticketDirty = true;\n}\n\nfunction generateUserSeed() {\n  // crypto gives different visitors different patterns even when their answers match.\n  if (window.crypto && window.crypto.getRandomValues) {\n    const values = new Uint32Array(1);\n    window.crypto.getRandomValues(values);\n    return values[0] % 900000 + 100000;\n  }\n\n  return Math.floor((Date.now() + Math.random() * 1000000) % 900000) + 100000;\n}\n\nfunction makeSeedFromAnswers() {\n  const answerSeed =\n    answers[0] * 101 +\n    answers[1] * 1009 +\n    answers[2] * 2017 +\n    answers[3] * 3011 +\n    answers[4] * 4001;\n\n  // Keep the visitor-specific seed and answer structure in the same deterministic code.\n  return Math.abs((userSeed * 37 + answerSeed * 97) % 100000000);\n}\n\nfunction windowResized() {\n  const area = document.getElementById(\"canvasArea\");\n  resizeCanvas(area.clientWidth, area.clientHeight);\n}\n\nfunction setupPrintControl() {\n  const printButton = document.getElementById(\"printButton\");\n\n  if (printButton) {\n    printButton.addEventListener(\"click\", finishAndPrint);\n  }\n\n  // Global listener works even while a slider or another control has focus.\n  window.addEventListener(\"keydown\", function(event) {\n    if (\n      event.key.toLowerCase() === \"p\" &&\n      !event.ctrlKey &&\n      !event.metaKey &&\n      !event.altKey\n    ) {\n      event.preventDefault();\n      finishAndPrint();\n    }\n  });\n}\n\n\nfunction setupSharedFooterControls() {\n  const arEye = document.getElementById(\"footerArabicEye\");\n  const heEye = document.getElementById(\"footerHebrewEye\");\n\n  if (arEye) arEye.addEventListener(\"click\", function() {\n    if (window.parent && window.parent !== window && typeof window.parent.selectPagmarLens === \"function\") {\n      window.parent.selectPagmarLens(\"red\");\n    }\n  });\n\n  if (heEye) heEye.addEventListener(\"click\", function() {\n    if (window.parent && window.parent !== window && typeof window.parent.selectPagmarLens === \"function\") {\n      window.parent.selectPagmarLens(\"cyan\");\n    }\n  });\n}\n\nfunction drawTicketPreview() {\n  const maxW = Math.min(width * 0.92, 1020);\n  const fitByWidth = width * 0.78;\n  const fitByHeight = height * 0.86 / PRINT_RATIO;\n\n  let previewW = Math.min(fitByWidth, fitByHeight, maxW);\n  previewW = Math.max(270, previewW);\n\n  const previewH = previewW * PRINT_RATIO;\n  const x = width / 2 - previewW / 2;\n  const y = height / 2 - previewH / 2;\n\n  image(ticketG, x, y, previewW, previewH);\n}\n\nfunction finishAndPrint() {\n  renderHighResolutionTicket();\n\n  const canvasForExport = ticketG.canvas || ticketG.elt;\n  const dataUrl = canvasForExport.toDataURL(\"image/png\");\n\n  // Use a dedicated print window with a strict A6 landscape page definition.\n  // This is more reliable than trying to print the interactive UI page itself.\n  const printWindow = window.open(\"\", \"reflectionTicketPrint\", \"width=900,height=700\");\n\n  if (!printWindow) {\n    alert(\"Please allow pop-ups so the A6 print window can open.\");\n    return;\n  }\n\n  const printHtml = `<!DOCTYPE html>\n<html>\n<head>\n  <meta charset=\"UTF-8\" />\n  <title>Print A6 Ticket</title>\n  <style>\n    @page {\n      size: 148mm 105mm;\n      margin: 0;\n    }\n    html, body {\n      margin: 0;\n      padding: 0;\n      width: 148mm;\n      height: 105mm;\n      overflow: hidden;\n      background: #ffffff;\n    }\n    body {\n      display: flex;\n      align-items: center;\n      justify-content: center;\n    }\n    img {\n      display: block;\n      width: 148mm;\n      height: 105mm;\n      object-fit: fill;\n      image-rendering: auto;\n      -webkit-print-color-adjust: exact;\n      print-color-adjust: exact;\n    }\n  </style>\n</head>\n<body>\n  <img id=\"ticketImage\" src=\"${dataUrl}\" alt=\"A6 ticket\" />\n  <script>\n    const img = document.getElementById(\"ticketImage\");\n    function runPrint() {\n      setTimeout(function() {\n        window.focus();\n        window.print();\n      }, 80);\n    }\n    if (img.complete) {\n      runPrint();\n    } else {\n      img.onload = runPrint;\n    }\n    window.onafterprint = function() { window.close(); };\n  <\\/script>\n</body>\n</html>`;\n\n  printWindow.document.open();\n  printWindow.document.write(printHtml);\n  printWindow.document.close();\n}\n\nfunction saveHighResTicketPNG() {\n  renderHighResolutionTicket();\n\n  const canvasForExport = ticketG.canvas || ticketG.elt;\n\n  canvasToPngBlobWithDpi(canvasForExport, EXPORT_DPI)\n    .then(function(blob) {\n      const link = document.createElement(\"a\");\n      const url = URL.createObjectURL(blob);\n\n      link.download =\n        \"my_reflection_A6_landscape_300dpi_\" + patternSeed + \".png\";\n      link.href = url;\n      document.body.appendChild(link);\n      link.click();\n      link.remove();\n\n      setTimeout(function() {\n        URL.revokeObjectURL(url);\n      }, 1000);\n    })\n    .catch(function(error) {\n      console.error(\"Could not save the A6 PNG with DPI metadata:\", error);\n\n      // Safe fallback: the pixel dimensions are still exact A6 at 300 DPI.\n      const link = document.createElement(\"a\");\n      link.download =\n        \"my_reflection_A6_landscape_1748x1240_\" + patternSeed + \".png\";\n      link.href = canvasForExport.toDataURL(\"image/png\");\n      link.click();\n    });\n}\n\n/**\n * Exports the canvas as a PNG and inserts a pHYs chunk so design/print\n * applications recognize the file as 300 DPI, not merely as a pixel image.\n */\nasync function canvasToPngBlobWithDpi(canvasElement, dpi) {\n  const originalBlob = await new Promise(function(resolve, reject) {\n    canvasElement.toBlob(function(blob) {\n      if (blob) resolve(blob);\n      else reject(new Error(\"Canvas PNG export returned no data.\"));\n    }, \"image/png\");\n  });\n\n  const originalBytes = new Uint8Array(await originalBlob.arrayBuffer());\n  const pngBytes = insertPngPhysicalResolution(originalBytes, dpi);\n\n  return new Blob([pngBytes], { type: \"image/png\" });\n}\n\nfunction insertPngPhysicalResolution(pngBytes, dpi) {\n  const PNG_SIGNATURE_LENGTH = 8;\n  const IHDR_TOTAL_LENGTH = 25; // 4 length + 4 type + 13 data + 4 CRC\n  const insertAt = PNG_SIGNATURE_LENGTH + IHDR_TOTAL_LENGTH;\n  const pixelsPerMeter = Math.round(dpi / 0.0254);\n\n  const data = new Uint8Array(9);\n  writeUint32BE(data, 0, pixelsPerMeter);\n  writeUint32BE(data, 4, pixelsPerMeter);\n  data[8] = 1; // Unit specifier: metres\n\n  const type = new Uint8Array([112, 72, 89, 115]); // \"pHYs\"\n  const chunk = new Uint8Array(4 + 4 + data.length + 4);\n\n  writeUint32BE(chunk, 0, data.length);\n  chunk.set(type, 4);\n  chunk.set(data, 8);\n\n  const crcInput = new Uint8Array(type.length + data.length);\n  crcInput.set(type, 0);\n  crcInput.set(data, type.length);\n  writeUint32BE(chunk, 8 + data.length, crc32(crcInput));\n\n  const output = new Uint8Array(pngBytes.length + chunk.length);\n  output.set(pngBytes.slice(0, insertAt), 0);\n  output.set(chunk, insertAt);\n  output.set(pngBytes.slice(insertAt), insertAt + chunk.length);\n\n  return output;\n}\n\nfunction writeUint32BE(bytes, offset, value) {\n  bytes[offset] = (value >>> 24) & 255;\n  bytes[offset + 1] = (value >>> 16) & 255;\n  bytes[offset + 2] = (value >>> 8) & 255;\n  bytes[offset + 3] = value & 255;\n}\n\nfunction crc32(bytes) {\n  let crc = 0xffffffff;\n\n  for (let i = 0; i < bytes.length; i++) {\n    crc ^= bytes[i];\n\n    for (let bit = 0; bit < 8; bit++) {\n      const mask = -(crc & 1);\n      crc = (crc >>> 1) ^ (0xedb88320 & mask);\n    }\n  }\n\n  return (crc ^ 0xffffffff) >>> 0;\n}\n\nfunction resetAnswers() {\n  ticketLang = currentLang;\n  answers = [1, 2, 2, 2, 2];\n\n  // RESET means a new visitor, so the same answer set does not repeat the previous pattern.\n  userSeed = generateUserSeed();\n\n  renderQuestions();\n  markTicketDirty();\n}\n\nfunction renderHighResolutionTicket() {\n  ticketG.clear();\n  ticketG.background(255);\n  ticketG.noSmooth();\n  drawTicketOn(ticketG, 0, 0, PRINT_W, PRINT_H);\n  ticketDirty = false;\n}\n\nfunction getTicketLayout(x, y, w, h) {\n  // Exact landscape proportions taken from the approved reference layout.\n  // The pattern nearly bleeds on three sides; the text has a compact left margin.\n  const pagePadding = w * 0.024;\n  const headerY = y + h * 0.079;\n\n  const patternY = y + h * 0.009;\n  const patternH = h * 0.974;\n\n  // The pattern area is made from two adjacent square strips. Each strip holds\n  // five square modules stacked vertically, matching the approved reference.\n  const singleStripW = patternH / PATTERN_BLOCK_COUNT;\n  const patternGap = Math.max(0, w * 0.0008);\n  const patternW = singleStripW * PATTERN_STRIP_COUNT + patternGap * (PATTERN_STRIP_COUNT - 1);\n  const patternRight = x + w * 0.992;\n  const patternX = patternRight - patternW;\n\n  const contentX = x + w * 0.024;\n  // Keep the text block closer to the pattern, following the approved reference.\n  const contentRight = patternX - w * 0.026;\n  const contentW = contentRight - contentX;\n  const columnGap = patternX - contentRight;\n\n  return {\n    pagePadding,\n    columnGap,\n    headerY,\n    patternX,\n    patternY,\n    patternW,\n    patternH,\n    singleStripW,\n    patternGap,\n    contentX,\n    contentRight,\n    contentW\n  };\n}\n\nfunction drawTicketOn(g, x, y, w, h) {\n  const layout = getTicketLayout(x, y, w, h);\n\n  g.push();\n\n  // No frame. The page edge and internal alignment create the structure.\n  g.background(255);\n  g.noStroke();\n\n  drawTicketHeaderOn(g, x, y, w, h, layout);\n  drawPatternOn(g, x, y, w, h, layout);\n  drawTicketBodyOn(g, x, y, w, h, layout);\n  drawBarcodeOn(g, x, y, w, h, layout);\n\n  g.pop();\n}\n\nfunction drawTicketHeaderOn(g, x, y, w, h, layout) {\n  const he = CONTENT.he;\n  const ar = CONTENT.ar;\n\n  g.push();\n  g.textFont(getTicketFont());\n  g.noStroke();\n  g.textStyle(BOLD);\n  g.textSize(h * 0.058);\n\n  drawBilingualRTLText(\n    g,\n    he.ticketTitle,\n    ar.ticketTitle,\n    layout.contentRight,\n    layout.headerY,\n    {\n      baseline: \"middle\",\n      offset: h * 0.0016\n    }\n  );\n\n  // The project marker is intentionally omitted from the printed face so the\n  // title keeps the same clean top spacing as the approved reference.\n  g.pop();\n}\n\nfunction getTicketFont() {\n  // A font-family string forces p5 to use the browser's native Canvas text\n  // renderer, which supports RTL ordering and Arabic contextual shaping.\n  return fontReady ? \"SimplerMono\" : \"Arial\";\n}\n\nfunction drawCanvasText(g, textValue, x, y, options) {\n  const opts = options || {};\n  const ctx = g.drawingContext;\n\n  ctx.save();\n  ctx.direction = opts.direction || \"rtl\";\n  ctx.textAlign = opts.align || \"right\";\n  ctx.textBaseline = opts.baseline || \"top\";\n  ctx.fillText(String(textValue), x, y);\n  ctx.restore();\n}\n\nfunction drawRTLText(g, textValue, x, y, baseline) {\n  drawCanvasText(g, textValue, x, y, {\n    direction: \"rtl\",\n    align: \"right\",\n    baseline: baseline || \"top\"\n  });\n}\n\nfunction drawLTRText(g, textValue, x, y, align, baseline) {\n  drawCanvasText(g, textValue, x, y, {\n    direction: \"ltr\",\n    align: align || \"left\",\n    baseline: baseline || \"top\"\n  });\n}\n\nfunction drawBilingualRTLText(g, hebrewText, arabicText, x, y, options) {\n  const opts = options || {};\n  const offset = opts.offset === undefined ? 1.5 : opts.offset;\n  const baseline = opts.baseline || \"top\";\n  const ctx = g.drawingContext;\n\n  ctx.save();\n  ctx.globalCompositeOperation = \"multiply\";\n\n  g.fill(ARABIC_TEXT_COLOR);\n  drawCanvasText(g, arabicText, x - offset, y - offset * 0.58, {\n    direction: \"rtl\",\n    align: \"right\",\n    baseline\n  });\n\n  g.fill(HEBREW_TEXT_COLOR);\n  drawCanvasText(g, hebrewText, x + offset, y + offset * 0.58, {\n    direction: \"rtl\",\n    align: \"right\",\n    baseline\n  });\n\n  ctx.restore();\n}\n\nfunction drawBilingualLines(g, hebrewLines, arabicLines, x, startY, lineHeight, offset) {\n  const ctx = g.drawingContext;\n  const shift = offset === undefined ? 1.5 : offset;\n\n  ctx.save();\n  ctx.globalCompositeOperation = \"multiply\";\n\n  g.fill(ARABIC_TEXT_COLOR);\n  for (let i = 0; i < arabicLines.length; i++) {\n    drawRTLText(g, arabicLines[i], x - shift, startY + i * lineHeight - shift * 0.58);\n  }\n\n  g.fill(HEBREW_TEXT_COLOR);\n  for (let i = 0; i < hebrewLines.length; i++) {\n    drawRTLText(g, hebrewLines[i], x + shift, startY + i * lineHeight + shift * 0.58);\n  }\n\n  ctx.restore();\n}\n\nfunction drawPatternOn(g, x, y, w, h, layout) {\n  const px = layout.patternX;\n  const py = layout.patternY;\n  const patternW = layout.patternW;\n  const patternH = layout.patternH;\n  const stripW = layout.singleStripW;\n  const stripGap = layout.patternGap;\n\n  // Two adjacent strips, each made from five exact square modules. Each module\n  // uses an 18 \u00D7 18 grid, so every colored unit remains a perfect square.\n  const medallionCount = PATTERN_BLOCK_COUNT;\n  const stripCount = PATTERN_STRIP_COUNT;\n  const cols = 18;\n  const rowsPerMedallion = 18;\n  const rows = rowsPerMedallion * medallionCount;\n  const halfCols = cols / 2;\n  const cell = stripW / cols;\n  const actualH = rows * cell;\n  const top = py + (patternH - actualH) * 0.5;\n  const medallionH = rowsPerMedallion;\n\n  const meaningLoss = answers[0];\n  const languageShift = answers[1];\n  const misreading = answers[2];\n  const belonging = answers[3];\n  const silence = answers[4];\n\n  const centerGap = Math.floor(mapValue(languageShift, 1, 5, 0, 2.2));\n  const missingCenterChance = mapValue(meaningLoss, 1, 5, 0.02, 0.42);\n  const pairDisplacementChance = mapValue(misreading, 1, 5, 0.01, 0.22);\n  const frameStrength = mapValue(belonging, 1, 5, 0.35, 0.95);\n  const silenceChance = mapValue(silence, 1, 5, 0.01, 0.25);\n\n  g.push();\n  g.noStroke();\n  g.fill(255);\n  g.rect(px, top, patternW, actualH);\n\n  for (let stripIndex = 0; stripIndex < stripCount; stripIndex++) {\n    const stripX = px + stripIndex * (stripW + stripGap);\n\n    for (let row = 0; row < rows; row++) {\n      const medallionIndex = Math.min(\n        medallionCount - 1,\n        Math.floor(row / rowsPerMedallion)\n      );\n\n      const localRow = row - medallionIndex * rowsPerMedallion;\n      const localCenterY = (medallionH - 1) * 0.5;\n      const normalizedY = Math.abs(localRow - localCenterY) / Math.max(1, localCenterY);\n\n      const motifVariant = Math.floor(\n        patternHash(201 + medallionIndex + stripIndex * 17, medallionIndex, stripIndex) * 4\n      );\n      const paletteFlip = patternHash(211 + stripIndex * 13, medallionIndex, userSeed) > 0.5;\n\n      for (let halfIndex = 0; halfIndex < halfCols; halfIndex++) {\n        const distanceFromCenter = halfCols - 1 - halfIndex;\n        if (distanceFromCenter < centerGap) continue;\n\n        const normalizedX = distanceFromCenter / Math.max(1, halfCols - 1);\n        const diamondDistance = normalizedX + normalizedY;\n        const innerDiamondDistance = normalizedX * 1.28 + normalizedY * 1.05;\n\n        const outerBandThickness = 0.075 + frameStrength * 0.035;\n        const onOuterDiamond = Math.abs(diamondDistance - 1.0) < outerBandThickness;\n        const onInnerDiamond = Math.abs(innerDiamondDistance - 0.58) < 0.075;\n\n        const centerGlyph =\n          distanceFromCenter <= 2 &&\n          Math.abs(localRow - localCenterY) <= 2.4 &&\n          ((distanceFromCenter + Math.round(localRow)) % 2 === motifVariant % 2);\n\n        const diagonalThreadA =\n          motifVariant === 0 &&\n          Math.abs(normalizedX - normalizedY * 0.72) < 0.08;\n\n        const diagonalThreadB =\n          motifVariant === 1 &&\n          Math.abs(normalizedX + normalizedY * 0.58 - 0.72) < 0.07;\n\n        const steppedThread =\n          motifVariant === 2 &&\n          ((distanceFromCenter + Math.floor(localRow)) % 4 === 0) &&\n          diamondDistance < 0.92;\n\n        const floatingMarks =\n          motifVariant === 3 &&\n          diamondDistance < 0.9 &&\n          patternHash(230 + medallionIndex + stripIndex * 19, distanceFromCenter, row) < 0.20;\n\n        let active =\n          onOuterDiamond ||\n          onInnerDiamond ||\n          centerGlyph ||\n          diagonalThreadA ||\n          diagonalThreadB ||\n          steppedThread ||\n          floatingMarks;\n\n        if (\n          !active &&\n          diamondDistance > 0.82 &&\n          diamondDistance < 1.05 &&\n          patternHash(240 + stripIndex * 7, distanceFromCenter, row) < frameStrength * 0.28\n        ) {\n          active = true;\n        }\n\n        if (!active) continue;\n\n        const centerProximity = 1 - Math.min(1, (normalizedX + normalizedY) * 0.78);\n        if (\n          centerProximity > 0.18 &&\n          patternHash(250 + stripIndex * 5, distanceFromCenter, row) < missingCenterChance * centerProximity\n        ) {\n          continue;\n        }\n\n        if (patternHash(260 + stripIndex * 11, distanceFromCenter, row) < silenceChance) continue;\n\n        let drawDistance = distanceFromCenter;\n        let drawRow = row;\n\n        if (patternHash(270 + stripIndex * 23, distanceFromCenter, row) < pairDisplacementChance) {\n          const verticalDirection =\n            patternHash(271 + stripIndex * 23, distanceFromCenter, row) < 0.5 ? -1 : 1;\n          drawRow += verticalDirection;\n\n          if (patternHash(272 + stripIndex * 23, distanceFromCenter, row) > 0.58) {\n            drawDistance += patternHash(273 + stripIndex * 23, distanceFromCenter, row) < 0.5 ? -1 : 1;\n          }\n        }\n\n        const moduleStartRow = medallionIndex * rowsPerMedallion;\n        const moduleEndRow = moduleStartRow + rowsPerMedallion - 1;\n\n        if (\n          drawDistance < centerGap ||\n          drawDistance >= halfCols ||\n          drawRow < moduleStartRow ||\n          drawRow > moduleEndRow\n        ) {\n          continue;\n        }\n\n        const leftCol = halfCols - 1 - drawDistance;\n        const rightCol = cols - 1 - leftCol;\n\n        const colorNoise = patternHash(\n          290 + medallionIndex + languageShift + stripIndex * 29,\n          distanceFromCenter,\n          row\n        );\n\n        let useRed = onOuterDiamond || centerGlyph;\n        if (paletteFlip) useRed = !useRed;\n        if (colorNoise > 0.72) useRed = !useRed;\n\n        g.fill(useRed ? RED : BLUE);\n\n        const inset = Math.max(1, cell * 0.12);\n        const squareSize = Math.max(1, cell - inset);\n        const drawY = top + drawRow * cell + inset * 0.5;\n\n        drawPatternCell(g, stripX, cell, leftCol, drawY, inset, squareSize);\n        drawPatternCell(g, stripX, cell, rightCol, drawY, inset, squareSize);\n      }\n    }\n  }\n\n  g.pop();\n}\n\nfunction drawPatternCell(g, patternX, cell, column, drawY, inset, squareSize) {\n  const drawX = patternX + column * cell + inset * 0.5;\n  const x1 = Math.round(drawX);\n  const y1 = Math.round(drawY);\n  const side = Math.max(1, Math.round(squareSize));\n  g.rect(x1, y1, side, side);\n}\n\nfunction patternHash(salt, a, b) {\n  const n = Math.sin(\n    salt * 93.173 +\n    a * 127.913 +\n    b * 311.719 +\n    patternSeed * 0.017 +\n    userSeed * 0.00031\n  ) * 43758.5453123;\n\n  return n - Math.floor(n);\n}\n\nfunction fitWrappedText(g, textValue, maxWidth, maxLines, startSize, minSize) {\n  let size = startSize;\n  let lines = [];\n\n  while (size >= minSize) {\n    g.textSize(size);\n    lines = wrapLines(g, textValue, maxWidth);\n    if (lines.length <= maxLines) break;\n    size -= 1;\n  }\n\n  return { size, lines };\n}\n\nfunction fitBilingualWrappedText(g, hebrewText, arabicText, maxWidth, maxLines, startSize, minSize) {\n  let size = startSize;\n  let hebrewLines = [];\n  let arabicLines = [];\n\n  while (size >= minSize) {\n    g.textSize(size);\n    hebrewLines = wrapLines(g, hebrewText, maxWidth);\n    arabicLines = wrapLines(g, arabicText, maxWidth);\n\n    if (hebrewLines.length <= maxLines && arabicLines.length <= maxLines) {\n      break;\n    }\n\n    size -= 1;\n  }\n\n  return { size, hebrewLines, arabicLines };\n}\n\nfunction drawMetricBlocks(g, x, y, activeCount, blockSize, gap) {\n  g.noStroke();\n\n  for (let i = 0; i < 5; i++) {\n    g.fill(i < activeCount ? ANSWER_BLOCK_COLOR : \"#d9d9d9\");\n    g.rect(x + i * (blockSize + gap), y, blockSize, blockSize);\n  }\n}\n\nfunction drawTicketBodyOn(g, x, y, w, h, layout) {\n  const he = CONTENT.he;\n  const ar = CONTENT.ar;\n  const textRight = layout.contentRight;\n  const contentW = layout.contentW;\n  const textOffset = Math.max(1.25, h * 0.00125);\n\n  g.push();\n  g.textFont(getTicketFont());\n  g.noStroke();\n\n  // Both languages are always present. Their overlap is rendered with multiply.\n  const noteY = y + h * 0.190;\n  g.textStyle(NORMAL);\n  g.textSize(h * 0.014);\n  drawBilingualRTLText(g, he.noteLabel, ar.noteLabel, textRight, noteY, {\n    offset: textOffset\n  });\n\n  const hebrewParagraph = getReflectionParagraph(\"he\");\n  const arabicParagraph = getReflectionParagraph(\"ar\");\n  const fitted = fitBilingualWrappedText(\n    g,\n    hebrewParagraph,\n    arabicParagraph,\n    contentW,\n    9,\n    h * 0.029,\n    h * 0.0225\n  );\n\n  g.textStyle(NORMAL);\n  g.textSize(fitted.size);\n  const paragraphLineH = fitted.size * 1.28;\n  const paragraphStartY = y + h * 0.210;\n  drawBilingualLines(\n    g,\n    fitted.hebrewLines,\n    fitted.arabicLines,\n    textRight,\n    paragraphStartY,\n    paragraphLineH,\n    textOffset\n  );\n\n  // Fixed row anchors preserve the exact vertical rhythm of the approved layout.\n  const rowStart = 0.490;\n  const rowEnd = 0.842;\n  const rowStep = (rowEnd - rowStart) / 4;\n  const rowAnchors = Array.from({ length: 5 }, function(_, index) {\n    return rowStart + index * rowStep;\n  });\n  const blockSize = h * 0.025;\n  const blockGap = h * 0.0095;\n  const blocksX = layout.contentX;\n  const blocksTotalW = blockSize * 5 + blockGap * 4;\n  const scoreToTextGap = w * 0.072;\n  const metricTextW = Math.max(\n    h * 0.16,\n    layout.contentRight - (blocksX + blocksTotalW + scoreToTextGap)\n  );\n\n  for (let i = 0; i < 5; i++) {\n    const rowY = y + h * rowAnchors[i];\n    const hebrewLabel = he.labels[i];\n    const arabicLabel = ar.labels[i];\n    const hebrewStatement = he.statements[i][answers[i] - 1];\n    const arabicStatement = ar.statements[i][answers[i] - 1];\n\n    drawMetricBlocks(\n      g,\n      blocksX,\n      rowY + h * 0.009,\n      answers[i],\n      blockSize,\n      blockGap\n    );\n\n    g.fill(92);\n    g.textSize(h * 0.0105);\n    g.textStyle(NORMAL);\n    drawLTRText(\n      g,\n      \"[\" + pad2(answers[i]) + \"]\",\n      blocksX,\n      rowY + blockSize + h * 0.014,\n      \"left\",\n      \"top\"\n    );\n\n    g.textStyle(BOLD);\n    g.textSize(h * 0.0212);\n    drawBilingualRTLText(\n      g,\n      hebrewLabel,\n      arabicLabel,\n      textRight,\n      rowY,\n      { offset: textOffset }\n    );\n\n    g.textStyle(NORMAL);\n    g.textSize(h * 0.0143);\n    const hebrewStatementLines = wrapLines(g, hebrewStatement, metricTextW).slice(0, 2);\n    const arabicStatementLines = wrapLines(g, arabicStatement, metricTextW).slice(0, 2);\n    drawBilingualLines(\n      g,\n      hebrewStatementLines,\n      arabicStatementLines,\n      textRight,\n      rowY + h * 0.0242,\n      h * 0.0182,\n      textOffset * 0.82\n    );\n  }\n\n  // The bilingual footer sits on the final baseline without competing with the readings.\n  const footerY = y + h * 0.952;\n  g.textStyle(NORMAL);\n  g.textSize(h * 0.0118);\n  const hebrewFooterLines = wrapLines(g, he.footerNote, contentW).slice(0, 1);\n  const arabicFooterLines = wrapLines(g, ar.footerNote, contentW).slice(0, 1);\n  drawBilingualLines(\n    g,\n    hebrewFooterLines,\n    arabicFooterLines,\n    textRight,\n    footerY,\n    h * 0.016,\n    textOffset * 0.75\n  );\n\n  g.pop();\n}\n\nfunction drawBarcodeOn(g, x, y, w, h, layout) {\n  // Kept as an empty hook. The approved landscape face has no barcode block;\n  // removing it prevents the lower-left area from becoming visually compressed.\n}\n\nfunction getReflectionParagraph(lang) {\n  const system = CONTENT[lang].reflectionSystem;\n  const average = answers.reduce((sum, value) => sum + value, 0) / answers.length;\n  const ranked = answers\n    .map((value, index) => ({ value, index }))\n    .sort((a, b) => b.value - a.value || a.index - b.index);\n\n  const topOne = ranked[0];\n  const topTwo = ranked[1];\n  const lowest = ranked.slice().sort((a, b) => a.value - b.value || a.index - b.index)[0];\n  const maximum = ranked[0].value;\n  const minimum = lowest.value;\n  const spread = maximum - minimum;\n\n  const openingBand = average <= 2.2 ? \"low\" : average >= 3.8 ? \"high\" : \"mid\";\n  const topOneBand = getReflectionScoreBand(topOne.value);\n  const topTwoBand = getReflectionScoreBand(topTwo.value);\n\n  const closingKey = spread >= 3 ? \"contrast\" : spread <= 1 ? \"even\" : \"balanced\";\n\n  const sentences = [\n    chooseReflectionText(system.opening[openingBand], 10),\n    chooseReflectionText(system.dimensions[topOne.index][topOneBand], 20 + topOne.index),\n    chooseReflectionText(system.dimensions[topTwo.index][topTwoBand], 30 + topTwo.index),\n    chooseReflectionText(system.closing[closingKey], 50)\n  ];\n\n  return sentences.filter(Boolean).join(\" \");\n}\n\nfunction getReflectionScoreBand(value) {\n  if (value <= 2) return \"low\";\n  if (value >= 4) return \"high\";\n  return \"mid\";\n}\n\nfunction chooseReflectionText(options, salt) {\n  if (!Array.isArray(options) || options.length === 0) return \"\";\n\n  const raw = Math.sin(\n    userSeed * 0.000127 +\n    patternSeed * 0.00173 +\n    salt * 41.771\n  ) * 43758.5453123;\n\n  const fraction = raw - Math.floor(raw);\n  const index = Math.min(options.length - 1, Math.floor(fraction * options.length));\n  return options[index];\n}\n\nfunction drawTextByLang(g, textValue, x, y) {\n  // Both Arabic and Hebrew are RTL languages.\n  drawRTLText(g, textValue, x, y);\n}\n\nfunction wrapLines(g, textValue, maxWidth) {\n  const words = String(textValue).trim().split(/\\s+/);\n  const lines = [];\n  const ctx = g.drawingContext;\n  let current = \"\";\n\n  ctx.save();\n  ctx.direction = \"rtl\";\n\n  for (let i = 0; i < words.length; i++) {\n    // Keep the logical word order. Native Canvas bidi rendering displays it RTL.\n    const test = current ? current + \" \" + words[i] : words[i];\n    if (ctx.measureText(test).width <= maxWidth || current === \"\") {\n      current = test;\n    } else {\n      lines.push(current);\n      current = words[i];\n    }\n  }\n\n  ctx.restore();\n  if (current) lines.push(current);\n  return lines;\n}\n\nfunction drawLines(g, lines, x, startY, lineHeight, direction) {\n  const useRTL = direction !== \"ltr\";\n  for (let i = 0; i < lines.length; i++) {\n    if (useRTL) {\n      drawRTLText(g, lines[i], x, startY + i * lineHeight);\n    } else {\n      drawLTRText(g, lines[i], x, startY + i * lineHeight, \"left\", \"top\");\n    }\n  }\n}\n\nfunction noiseHash(salt, a, b) {\n  const answerCode = answers[0] * 101 + answers[1] * 211 + answers[2] * 307 + answers[3] * 401 + answers[4] * 503 + patternSeed * 0.03;\n  const n = Math.sin(salt * 91.7 + a * 127.1 + b * 311.7 + answerCode) * 43758.5453123;\n  return n - Math.floor(n);\n}\n\nfunction mapValue(value, inMin, inMax, outMin, outMax) {\n  return outMin + (outMax - outMin) * ((value - inMin) / (inMax - inMin));\n}\n\nfunction pad2(value) {\n  return String(value).padStart(2, \"0\");\n}\n</script>\n</body>\n</html>";
 
 let reflectionTicketOpen = false;
 let reflectionTicketOverlay = null;
@@ -10019,7 +10479,7 @@ function syncReflectionTicketFrameWithMainSketch() {
   if (foundStatus) {
     foundStatus.setAttribute(
       "aria-label",
-      foundCount + " מתוך " + totalCount + " נמצאו / تم العثور على " + foundCount + " من " + totalCount
+      foundCount + " \u05DE\u05EA\u05D5\u05DA " + totalCount + " \u05E0\u05DE\u05E6\u05D0\u05D5 / \u062A\u0645 \u0627\u0644\u0639\u062B\u0648\u0631 \u0639\u0644\u0649 " + foundCount + " \u0645\u0646 " + totalCount
     );
   }
 
@@ -10051,13 +10511,9 @@ function syncReflectionTicketFrameWithMainSketch() {
       navWord.onclick = function(event) {
         event.preventDefault();
         event.stopPropagation();
-        closeReflectionTicket();
-
-        requestAnimationFrame(function() {
-          if (typeof navigateToFoundPair === "function") {
-            navigateToFoundPair(pair);
-          }
-        });
+        if (typeof navigateToFoundPair === "function") {
+          navigateToFoundPair(pair);
+        }
       };
     });
   }
@@ -10069,7 +10525,7 @@ function syncReflectionTicketFrameWithMainSketch() {
 
   const footerCurrent = doc.getElementById("footerCurrentWord");
   if (footerCurrent) {
-    const pair = { hebrew: "השתקפות", arabic: "انعكاس" };
+    const pair = { hebrew: "\u05D4\u05E9\u05EA\u05E7\u05E4\u05D5\u05EA", arabic: "\u0627\u0646\u0639\u0643\u0627\u0633" };
     const he = footerCurrent.querySelector(".hebrewLayer");
     const ar = footerCurrent.querySelector(".arabicLayer");
     if (he) he.textContent = pair.hebrew;
@@ -10081,13 +10537,9 @@ function syncReflectionTicketFrameWithMainSketch() {
     footerGridButton.onclick = function(event) {
       event.preventDefault();
       event.stopPropagation();
-      closeReflectionTicket();
-
-      requestAnimationFrame(function() {
-        if (typeof returnToMainGridFromNavigation === "function") {
-          returnToMainGridFromNavigation();
-        }
-      });
+      if (typeof transitionToMainGridFromNavigation === "function") {
+        transitionToMainGridFromNavigation();
+      }
     };
   }
 
@@ -10096,16 +10548,12 @@ function syncReflectionTicketFrameWithMainSketch() {
     footerHintButton.onclick = function(event) {
       event.preventDefault();
       event.stopPropagation();
-      closeReflectionTicket();
-
-      requestAnimationFrame(function() {
-        if (typeof returnToMainGridFromNavigation === "function") {
-          returnToMainGridFromNavigation();
-        }
-        if (typeof activateGridHint === "function") {
-          activateGridHint();
-        }
-      });
+      if (typeof transitionToMainGridFromNavigation === "function") {
+        transitionToMainGridFromNavigation();
+      }
+      if (typeof activateGridHint === "function") {
+        setTimeout(activateGridHint, 960);
+      }
     };
   }
 
@@ -10354,11 +10802,11 @@ window.showPagmarSharedLens = showSharedPagmarLens;
 window.hidePagmarSharedLens = hideSharedPagmarLens;
 
 // ================================================================
-// BIRD SCREEN — exact reference composition
-// ציפור מעופפת / عصفور طاير
+// BIRD SCREEN \u2014 exact reference composition
+// \u05E6\u05D9\u05E4\u05D5\u05E8 \u05DE\u05E2\u05D5\u05E4\u05E4\u05EA / \u0639\u0635\u0641\u0648\u0631 \u0637\u0627\u064A\u0631
 //
 // Keep bird.mp4 beside sketch.js.
-// The resting layout is locked to the supplied 925 × 511 reference
+// The resting layout is locked to the supplied 925 \u00D7 511 reference
 // and scales proportionally on other touch-screen resolutions.
 // Touching the bird repels nearby letters and starts the bilingual
 // typewriter text. Dragging the full RTL prompt from right to left opens
@@ -10404,7 +10852,7 @@ window.hidePagmarSharedLens = hideSharedPagmarLens;
     ink: "#161616",
     white: "#ffffff",
 
-    // Exact reference field, measured from the supplied 925 × 511 image.
+    // Exact reference field, measured from the supplied 925 \u00D7 511 image.
     // Bird is 6% larger than the reference version, while keeping the
     // same visual center so the surrounding composition does not move.
     fieldX: 221,
@@ -10460,20 +10908,20 @@ window.hidePagmarSharedLens = hideSharedPagmarLens;
   };
 
   // Exact copy used in the supplied visual reference.
-  var HEBREW_LINE_1 = "הזהות לעולם אינה מתגלה בשלמותה;";
-  var HEBREW_LINE_2 = "היא מופיעה ברסיסים.";
+  var HEBREW_LINE_1 = "\u05D4\u05D6\u05D4\u05D5\u05EA \u05DC\u05E2\u05D5\u05DC\u05DD \u05D0\u05D9\u05E0\u05D4 \u05DE\u05EA\u05D2\u05DC\u05D4 \u05D1\u05E9\u05DC\u05DE\u05D5\u05EA\u05D4;";
+  var HEBREW_LINE_2 = "\u05D4\u05D9\u05D0 \u05DE\u05D5\u05E4\u05D9\u05E2\u05D4 \u05D1\u05E8\u05E1\u05D9\u05E1\u05D9\u05DD.";
 
-  var ARABIC_LINE_1 = "الهوية لا توجــــد كــاملة أبداً";
-  var ARABIC_LINE_2 = "بل تظهر في شظايا.";
+  var ARABIC_LINE_1 = "\u0627\u0644\u0647\u0648\u064A\u0629 \u0644\u0627 \u062A\u0648\u062C\u0640\u0640\u0640\u0640\u062F \u0643\u0640\u0640\u0627\u0645\u0644\u0629 \u0623\u0628\u062F\u0627\u064B";
+  var ARABIC_LINE_2 = "\u0628\u0644 \u062A\u0638\u0647\u0631 \u0641\u064A \u0634\u0638\u0627\u064A\u0627.";
 
   // Both language scripts occupy the same prompt position, producing
   // the same red/cyan registration seen in the reference image.
-  var HEBREW_DRAG_PROMPT = "החלק לחפש";
-  var ARABIC_DRAG_PROMPT = "اسحب للبحث";
+  var HEBREW_DRAG_PROMPT = "\u05D4\u05D7\u05DC\u05E7 \u05DC\u05D7\u05E4\u05E9";
+  var ARABIC_DRAG_PROMPT = "\u0627\u0633\u062D\u0628 \u0644\u0644\u0628\u062D\u062B";
 
-  var BIRD_HEBREW_LETTERS = Array.from("ציפורמעופפת");
+  var BIRD_HEBREW_LETTERS = Array.from("\u05E6\u05D9\u05E4\u05D5\u05E8\u05DE\u05E2\u05D5\u05E4\u05E4\u05EA");
 
-  var BIRD_ARABIC_LETTERS = Array.from("عصفورطاير");
+  var BIRD_ARABIC_LETTERS = Array.from("\u0639\u0635\u0641\u0648\u0631\u0637\u0627\u064A\u0631");
 
   var birdRoot = null;
   var birdCanvas = null;
