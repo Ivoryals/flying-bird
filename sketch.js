@@ -4255,6 +4255,15 @@ function setupBorderScreenDom() {
       transform: scale(1);
     }
 
+    /* The border artwork already contains the single visible circle.
+       Hide every hotspot outline so no smaller concentric circle is drawn
+       inside it. The hotspots remain active for scroll-triggered content. */
+    .pagmar-border-hotspot-one::before,
+    .pagmar-border-hotspot-two::before,
+    .pagmar-border-hotspot-three::before {
+      display: none;
+    }
+
     .pagmar-border-hotspot-one {
       left: 77.5309%;
       top: 2.2856%;
